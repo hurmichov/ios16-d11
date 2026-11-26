@@ -29,6 +29,7 @@ RULES: list[tuple[str, str, str, re.Pattern]] = [(c, s, st, re.compile(r, re.I))
     ("codesign",   "error", "launchd", r"AMFI:.*(denied|not valid|kill)|code signature (invalid|not valid)|CS_KILL"),
     ("dyld",       "error", "launchd", r"dyld.*(shared cache|Library not loaded|symbol not found)"),
     ("crash",      "error", "launchd", r"(exited|terminated) (due to|with) (signal|abnormal)|Crashing on exception"),
+    ("pongo",      "info",  "iboot",   r"pongoOS|pongo>|checkra1n|checkm8"),
     ("display",    "info",  "kernel",  r"AppleCLCD|IOMobileFramebuffer|AppleDisplayPipe"),
     ("iboot",      "info",  "iboot",   r"iBoot|iBSS|iBEC|=======================================\s*::"),
     ("xnu",        "info",  "kernel",  r"Darwin Kernel Version"),

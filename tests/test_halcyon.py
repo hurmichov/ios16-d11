@@ -4,7 +4,7 @@ import zipfile
 import pytest
 
 from halcyon import cli
-from halcyon.modules import bootmon, build, compat, devicetree, img4
+from halcyon.modules import bootmon, build, compat, devicetree, img4, panic
 from halcyon.modules.device import detect
 from halcyon.modules.firmware import IPSW
 from halcyon.modules.safety import Guard, SafetyError, require_ipsw_matches, require_target
@@ -117,6 +117,24 @@ def test_bootmon():
     assert s.furthest_stage == "launchd"
     s2 = bootmon.analyze(["Darwin Kernel Version 22", "panic(cpu 1 caller 0x1): Kernel data abort"])
     assert s2.first_fatal.category == "panic" and "FAIL" in s2.verdict()
+
+
+def test_panic_ips(tmp_path):
+    header = '{"bug_type":"210","os_version":"iPhone OS 16.7.10 (20H392)"}'
+    body = ('{"build":"20H392","product":"iPhone9,2","kernel":"Darwin Kernel Version 22.6.0",'
+            '"panicString":"panic(cpu 0 caller 0x1): Still waiting for root device\\nAppleSEPManager timeout"}')
+    f = tmp_path / "panic-full.ips"
+    f.write_text(header + "\n" + body)
+    pan = panic.parse(f)
+    assert pan.product == "iPhone9,2" and pan.build == "20H392"
+    assert "rootdev" in pan.categories and "likely" in pan.verdict
+
+
+def test_panic_text(tmp_path):
+    f = tmp_path / "panic.txt"
+    f.write_text("Darwin Kernel Version 22.6.0\npanic(cpu 1 caller 0x2): Kernel data abort\n")
+    pan = panic.parse(f)
+    assert pan.kernel_version.startswith("Darwin") and "panic" in pan.verdict
 
 
 def test_build_profile(ipsws, tmp_path):

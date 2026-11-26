@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from halcyon import __version__, devices
-from halcyon.modules import bootmon, build, compat, deps, hwdiag, recovery, sep
+from halcyon.modules import bootmon, build, compat, deps, hwdiag, panic, recovery, sep
 from halcyon.modules import device as devmod
 from halcyon.modules.firmware import IPSW
 from halcyon.modules.logs import Session
@@ -125,6 +125,18 @@ def cmd_boot_monitor(a, s: Session) -> int:
     return 1 if summ.first_fatal else 0
 
 
+def cmd_panic(a, s: Session) -> int:
+    rc = 0
+    for path in a.file:
+        pan = panic.parse(path)
+        print(pan.summary())
+        print()
+        s.event("panic", source=pan.source, verdict=pan.verdict, categories=pan.categories)
+        if pan.categories:
+            rc = 1
+    return rc
+
+
 def cmd_sep(a, s: Session) -> int:
     for path in a.ipsw:
         with IPSW(path) as ip:
@@ -221,6 +233,10 @@ def parser() -> argparse.ArgumentParser:
     sp.add_argument("-v", "--verbose", action="store_true", help="show info milestones too")
     sp.add_argument("--raw", action="store_true", help="echo unclassified lines")
     sp.set_defaults(fn=cmd_boot_monitor)
+
+    sp = sub.add_parser("panic", help="parse & classify an on-disk kernel panic (.ips or text)")
+    sp.add_argument("file", nargs="+")
+    sp.set_defaults(fn=cmd_panic)
 
     sp = sub.add_parser("sep", help="SEP firmware research report")
     sp.add_argument("ipsw", nargs="+")

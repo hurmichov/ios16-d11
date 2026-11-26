@@ -25,7 +25,9 @@ halcyon ipsw  iPhone_5.5_P3_15.8.x_Restore.ipsw -c --verify     # BuildManifest 
 halcyon compat iPhone_5.5_P3_15.8.x_Restore.ipsw iPad_64bit_TouchID_ASTC_16.7.x_Restore.ipsw \
                --donor-board j171ap -o docs/COMPAT_MAP.md        # карта совместимости
 halcyon build profiles/d11-ios16.toml                            # план сборки (dry-run)
-halcyon boot-monitor --serial /dev/halcyon-diag                  # логи загрузки с RP2350
+pongo_console_tool | halcyon boot-monitor                        # логи pongoOS по USB (без DCSD)
+halcyon panic ~/panic-full.ips                                   # разбор паник-лога с диска
+halcyon boot-monitor --serial /dev/halcyon-diag                  # логи загрузки по serial (DCSD, опционально)
 halcyon backup ~/halcyon/backup --no-dry-run                     # резервная копия данных
 halcyon restore iPhone_5.5_P3_15.8.x_Restore.ipsw                # штатный откат (dry-run)
 ```
