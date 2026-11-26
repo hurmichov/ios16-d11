@@ -9,9 +9,9 @@ project(halcyon_diag C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 pico_sdk_init()
 
-add_executable(halcyon_diag src/main.c)
+add_executable(halcyon_diag src/main.c src/sdq.c src/idbus.c)
 target_compile_definitions(halcyon_diag PRIVATE HALCYON_DIAG_VERSION="0.1.0")
-target_link_libraries(halcyon_diag pico_stdlib hardware_uart hardware_adc hardware_irq)
+target_link_libraries(halcyon_diag pico_stdlib hardware_uart hardware_adc hardware_irq hardware_sync hardware_clocks)
 
 pico_enable_stdio_usb(halcyon_diag 1)
 pico_enable_stdio_uart(halcyon_diag 0)
