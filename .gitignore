@@ -1,0 +1,23 @@
+# Apple firmware must never be committed
+*.ipsw
+*.im4p
+*.img4
+*.im4m
+*.shsh
+*.shsh2
+*.dmg
+*.aea
+kernelcache*
+DeviceTree*
+sep-firmware*
+ipsw/
+work/
+extract/
+
+# build
+dist/
+build/
+*.egg-info/
+__pycache__/
+.pytest_cache/
+firmware/rp2350-diag/build/

@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "halcyon"
+version = "0.1.0"
+description = "Research toolkit for porting iOS 16 to iPhone 7 Plus (D11/D111, A10 Fusion) — Linux host"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+halcyon = "halcyon.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["halcyon*"]

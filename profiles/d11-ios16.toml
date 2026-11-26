@@ -1,0 +1,58 @@
+# Halcyon build profile: iPhone 7 Plus (D11AP) — iOS 16 experimental image.
+#
+# IPSWs are NOT in this repo. Download them from Apple's CDN yourself and fill in
+# `path` (and `sha256` once you have verified a copy — that makes the build reproducible).
+
+name   = "d11-ios16-evt1"
+target = "iPhone9,2"
+
+[inputs.base]          # target device, stock iOS 15 (source of bootchain, SEP, baseband, firmware blobs)
+path    = "~/halcyon/ipsw/iPhone_5.5_P3_15.8.x_Restore.ipsw"
+version = ""           # e.g. "15.8.3"; empty = don't enforce
+sha256  = ""
+
+[inputs.donor_soc]     # same SoC (T8010), iPadOS 16.x — kernelcache / kexts / DeviceTree reference
+path    = "~/halcyon/ipsw/iPad_64bit_TouchID_ASTC_16.7.x_Restore.ipsw"
+version = ""
+sha256  = ""
+
+[inputs.donor_phone]   # iPhone 8 Plus iOS 16.7.x — phone-idiom userspace reference
+path    = "~/halcyon/ipsw/iPhone_5.5_P3_16.7.x_Restore.ipsw"
+version = ""
+sha256  = ""
+
+[[steps]]
+run = "verify-inputs"
+
+[[steps]]
+run        = "extract"
+input      = "base"
+board      = "d11ap"
+components = ["KernelCache", "DeviceTree", "SEP"]
+
+[[steps]]
+run        = "extract"
+input      = "donor_soc"
+board      = "j171ap"
+components = ["KernelCache", "DeviceTree"]
+
+[[steps]]
+run = "dt-diff"
+a   = "base:DeviceTree"
+b   = "donor_soc:DeviceTree"
+
+# ---- EVT2+ (stubs: dry-run shows the plan, a real run stops here with a clear error)
+[[steps]]
+run = "kernel-patch"
+[[steps]]
+run = "kext-relink"
+[[steps]]
+run = "dt-merge"
+[[steps]]
+run = "trustcache"
+[[steps]]
+run = "ramdisk"
+[[steps]]
+run = "rootfs-assemble"
+[[steps]]
+run = "bootchain"
