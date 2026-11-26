@@ -62,6 +62,7 @@ halcyon restore iPhone_5.5_P3_15.8.x_Restore.ipsw                # штатны�
 - [MACOS_SETUP](docs/MACOS_SETUP.md): настройка основного macOS-хоста и какие IPSW качать
 - [FEDORA_SETUP](docs/FEDORA_SETUP.md): Linux для аналитики/диагностики (подмножество EVT1)
 - [ROADMAP](docs/ROADMAP.md): этапы EVT0 → Release и критерии выхода из каждого
+- [EVT2_PLAN](docs/EVT2_PLAN.md): пошаговая сборка образа на macOS (kernel-patch … bootchain)
 - [HARDWARE](docs/HARDWARE.md): матрица оборудования и реалистичные ожидания
 - [FIRMWARE_RESEARCH](docs/FIRMWARE_RESEARCH.md): план сравнения iOS 15 и 16, выбор доноров
 - [SEP](docs/SEP.md): Secure Enclave, Touch ID, защита данных

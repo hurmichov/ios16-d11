@@ -134,8 +134,9 @@ def _kext_diff(ctx: Context, args: dict) -> dict:
 def _todo(name: str, stage: str) -> StepFn:
     def fn(ctx: Context, args: dict) -> dict:
         if ctx.dry_run:
-            return {"planned": True, "status": f"not implemented ({stage})"}
-        raise StepNotImplemented(f"step '{name}' is planned for {stage} and not implemented yet")
+            return {"planned": True, "status": f"not implemented ({stage}); see docs/EVT2_PLAN.md"}
+        raise StepNotImplemented(
+            f"step '{name}' is planned for {stage} and not implemented yet — see docs/EVT2_PLAN.md")
     return fn
 
 
