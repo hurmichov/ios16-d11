@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from halcyon import __version__, devices
-from halcyon.modules import bootmon, build, compat, deps, hwdiag, panic, recovery, sep
+from halcyon.modules import bootmon, build, compat, deps, hwdiag, kernelcache, panic, recovery, sep
 from halcyon.modules import device as devmod
 from halcyon.modules.firmware import IPSW
 from halcyon.modules.logs import Session
@@ -125,6 +125,33 @@ def cmd_boot_monitor(a, s: Session) -> int:
     return 1 if summ.first_fatal else 0
 
 
+def cmd_kernel(a, s: Session) -> int:
+    if a.action == "kexts":
+        kc = kernelcache.parse_file(a.kc[0])
+        print(f"{kc.source}: filetype={'MH_FILESET' if kc.is_fileset else hex(kc.filetype)} "
+              f"kexts={len(kc.kexts)}")
+        if kc.kernel_version:
+            print(kc.kernel_version)
+        for k in kc.kexts:
+            tag = "[kernel]" if k.is_kernel else "        "
+            m = f"  [{', '.join(k.matches)}]" if k.matches else ""
+            print(f"{tag} {k.bundle_id:<52} {k.version or '':<12} {k.vmaddr and hex(k.vmaddr) or ''}{m}")
+        s.event("kernel.kexts", source=kc.source, count=len(kc.kexts), fileset=kc.is_fileset)
+        return 0
+    # diff
+    ka = kernelcache.parse_file(a.kc[0])
+    kb = kernelcache.parse_file(a.kc[1])
+    d = kernelcache.diff(ka, kb)
+    hw = {c.key: c.name for c in hwdiag.COMPONENTS}
+    md = d.to_markdown(hardware_hint=hw)
+    s.attach("kext-diff.md", md)
+    if a.out:
+        Path(a.out).write_text(md)
+    print(md)
+    s.event("kernel.diff", only_a=len(d.only_a), only_b=len(d.only_b), common=len(d.common))
+    return 0
+
+
 def cmd_panic(a, s: Session) -> int:
     rc = 0
     for path in a.file:
@@ -233,6 +260,12 @@ def parser() -> argparse.ArgumentParser:
     sp.add_argument("-v", "--verbose", action="store_true", help="show info milestones too")
     sp.add_argument("--raw", action="store_true", help="echo unclassified lines")
     sp.set_defaults(fn=cmd_boot_monitor)
+
+    sp = sub.add_parser("kernel", help="kernelcache inventory (list kexts / diff two kernelcaches)")
+    sp.add_argument("action", choices=["kexts", "diff"])
+    sp.add_argument("kc", nargs="+", help="kexts: one kernelcache; diff: A (iOS15/D11) then B (iOS16 donor)")
+    sp.add_argument("-o", "--out")
+    sp.set_defaults(fn=cmd_kernel)
 
     sp = sub.add_parser("panic", help="parse & classify an on-disk kernel panic (.ips or text)")
     sp.add_argument("file", nargs="+")

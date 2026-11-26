@@ -36,7 +36,7 @@ DEPS: tuple[Dep, ...] = (
         why="user data backup before any write"),
     Dep("apfs-fuse", "bin", "apfs-fuse", "apfs-fuse", required=False,
         why="read-only inspection of RootFS images (not in Fedora repos: build from source)"),
-    Dep("lzfse", "bin", "lzfse", "lzfse", required=False, why="kernelcache decompression"),
+    Dep("lzfse", "bin", "lzfse", "lzfse", why="kernelcache decompression (kernel kexts/diff)"),
     Dep("arm-none-eabi-gcc", "bin", "arm-none-eabi-gcc", "arm-none-eabi-gcc-cs", required=False,
         why="RP2350 diagnostic adapter firmware"),
     Dep("rpmbuild", "bin", "rpmbuild", "rpm-build", required=False, why="RPM packaging"),

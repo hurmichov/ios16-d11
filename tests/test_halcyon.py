@@ -4,7 +4,9 @@ import zipfile
 import pytest
 
 from halcyon import cli
-from halcyon.modules import bootmon, build, compat, devicetree, img4, panic
+import struct
+
+from halcyon.modules import bootmon, build, compat, devicetree, img4, kernelcache, panic
 from halcyon.modules.device import detect
 from halcyon.modules.firmware import IPSW
 from halcyon.modules.safety import Guard, SafetyError, require_ipsw_matches, require_target
@@ -117,6 +119,79 @@ def test_bootmon():
     assert s.furthest_stage == "launchd"
     s2 = bootmon.analyze(["Darwin Kernel Version 22", "panic(cpu 1 caller 0x1): Kernel data abort"])
     assert s2.first_fatal.category == "panic" and "FAIL" in s2.verdict()
+
+
+def make_kernelcache(entries, prelink, kver=b"Darwin Kernel Version 22.6.0: T8010"):
+    """entries: list[(bundle_id, vmaddr)]; prelink: list[(bundle_id, version, [matches])]."""
+    import plistlib
+    # build load commands
+    lcs = []
+    for bid, vmaddr in entries:
+        name = bid.encode() + b"\0"
+        entry_id_off = 32  # offset of entry_id string from start of the load command
+        body = struct.pack("<QQII", vmaddr, 0, entry_id_off, 0) + name
+        cmdsize = (8 + len(body) + 7) & ~7
+        body += b"\0" * (cmdsize - 8 - len(body))
+        lcs.append(struct.pack("<II", kernelcache.LC_FILESET_ENTRY, cmdsize) + body)
+    # __PRELINK_INFO segment with one __info section
+    pd = {"_PrelinkInfoDictionary": [
+        {"CFBundleIdentifier": b, "CFBundleVersion": v,
+         "IOKitPersonalities": {"p": {"IOProviderClass": m[0]}} if m else {}}
+        for b, v, m in prelink]}
+    plist = plistlib.dumps(pd)
+    # layout: header(32) + loadcmds + plist
+    seg_size = 72 + 80
+    # placeholder; fix section offset after we know total
+    def build(section_off):
+        sect = struct.pack("<16s16sQQIIIIIIII", b"__info", b"__PRELINK_INFO",
+                           0, len(plist), section_off, 0, 0, 0, 0, 0, 0, 0)
+        seg = struct.pack("<II16sQQQQiiII", kernelcache.LC_SEGMENT_64, seg_size, b"__PRELINK_INFO",
+                          0, 0, 0, 0, 3, 3, 1, 0) + sect
+        cmds = b"".join(lcs) + seg
+        ncmds = len(entries) + 1
+        hdr = struct.pack("<IIIIIIII", kernelcache.MH_MAGIC_64, 0x0100000C, 0,
+                          kernelcache.MH_FILESET, ncmds, len(cmds), 0, 0)
+        return hdr, cmds
+    hdr, cmds = build(0)
+    section_off = len(hdr) + len(cmds)
+    hdr, cmds = build(section_off)
+    return hdr + cmds + plist + b"\0" + kver + b"\0"
+
+
+def test_kernelcache_inventory():
+    data = make_kernelcache(
+        [("com.apple.kernel", 0xfffffff007004000),
+         ("com.apple.driver.AppleMultitouchSPI", 0xfffffff008000000),
+         ("com.apple.driver.AppleCS42L71Audio", 0xfffffff008100000)],
+        [("com.apple.driver.AppleMultitouchSPI", "1.0", ["AppleMultitouchSPIController"]),
+         ("com.apple.driver.AppleCS42L71Audio", "2.0", ["AppleARMPlatformDevice"])])
+    kc = kernelcache.parse(data, "kc15")
+    ids = kc.by_id()
+    assert kc.is_fileset and len(kc.kexts) == 3
+    assert ids["com.apple.driver.AppleMultitouchSPI"].vmaddr == 0xfffffff008000000
+    assert ids["com.apple.driver.AppleMultitouchSPI"].version == "1.0"
+    assert ids["com.apple.driver.AppleMultitouchSPI"].matches == ["AppleMultitouchSPIController"]
+    assert kc.kernel_version.startswith("Darwin")
+
+
+def test_kernelcache_via_im4p_and_diff():
+    kc15 = make_kernelcache(
+        [("com.apple.kernel", 1), ("com.apple.driver.AppleMultitouchSPI", 2),
+         ("com.apple.driver.AppleCS42L71Audio", 3)], [])
+    kc16 = make_kernelcache(
+        [("com.apple.kernel", 1), ("com.apple.driver.AppleMultitouchSPI", 2),
+         ("com.apple.driver.AppleNewThing16", 9)], [])
+    # wrap kc15 in an IM4P to exercise the IPSW path (uncompressed macho payload)
+    wrapped = img4.build_im4p("krnl", "KernelCache", kc15)
+    a = kernelcache.parse(wrapped, "kc15.im4p")
+    b = kernelcache.parse(kc16, "kc16")
+    d = kernelcache.diff(a, b)
+    only_a_ids = [k.bundle_id for k in d.only_a]
+    only_b_ids = [k.bundle_id for k in d.only_b]
+    assert "com.apple.driver.AppleCS42L71Audio" in only_a_ids
+    assert "com.apple.driver.AppleNewThing16" in only_b_ids
+    assert "com.apple.driver.AppleMultitouchSPI" in d.common
+    assert "AppleCS42L71Audio" in d.to_markdown()
 
 
 def test_panic_ips(tmp_path):

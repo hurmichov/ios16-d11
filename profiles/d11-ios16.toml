@@ -41,6 +41,11 @@ run = "dt-diff"
 a   = "base:DeviceTree"
 b   = "donor_soc:DeviceTree"
 
+[[steps]]
+run = "kext-diff"
+a   = "base:KernelCache"
+b   = "donor_soc:KernelCache"
+
 # ---- EVT2+ (stubs: dry-run shows the plan, a real run stops here with a clear error)
 [[steps]]
 run = "kernel-patch"

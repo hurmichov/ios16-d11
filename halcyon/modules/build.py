@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from halcyon.modules import devicetree, img4
+from halcyon.modules import devicetree, img4, kernelcache
 from halcyon.modules.firmware import IPSW, sha256_file
 from halcyon.modules.logs import Session
 
@@ -114,6 +114,21 @@ def _dt_diff(ctx: Context, args: dict) -> dict:
     rep.write_text(json.dumps({"only_a": d.only_a, "only_b": d.only_b,
                                "compatible_changed": d.compatible_changed}, indent=1))
     return {"report": str(rep.relative_to(ctx.workdir)), "only_a": len(d.only_a), "only_b": len(d.only_b)}
+
+
+@step("kext-diff")
+def _kext_diff(ctx: Context, args: dict) -> dict:
+    """args: a=<input:KernelCache>, b=<input:KernelCache> — writes a kext inventory diff."""
+    if ctx.dry_run:
+        return {"planned": True}
+    ka = kernelcache.parse(ctx.artifacts[args["a"]].read_bytes(), args["a"])
+    kb = kernelcache.parse(ctx.artifacts[args["b"]].read_bytes(), args["b"])
+    d = kernelcache.diff(ka, kb)
+    rep = ctx.workdir / "reports" / "kext-diff.md"
+    rep.parent.mkdir(parents=True, exist_ok=True)
+    rep.write_text(d.to_markdown())
+    return {"report": str(rep.relative_to(ctx.workdir)), "only_a": len(d.only_a),
+            "only_b": len(d.only_b), "common": len(d.common)}
 
 
 def _todo(name: str, stage: str) -> StepFn:

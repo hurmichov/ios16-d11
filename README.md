@@ -24,6 +24,8 @@ python3 -m halcyon targets         # целевые устройства и до
 halcyon ipsw  iPhone_5.5_P3_15.8.x_Restore.ipsw -c --verify     # BuildManifest + целостность
 halcyon compat iPhone_5.5_P3_15.8.x_Restore.ipsw iPad_64bit_TouchID_ASTC_16.7.x_Restore.ipsw \
                --donor-board j171ap -o docs/COMPAT_MAP.md        # карта совместимости
+halcyon kernel kexts kernelcache.release.iphone9              # список kext в ядре
+halcyon kernel diff  kc_d11_15  kc_ipad7_16 -o docs/KEXT_MAP.md  # каких драйверов D11 нет в ядре 16
 halcyon build profiles/d11-ios16.toml                            # план сборки (dry-run)
 pongo_console_tool | halcyon boot-monitor                        # логи pongoOS по USB (без DCSD)
 halcyon panic ~/panic-full.ips                                   # разбор паник-лога с диска
@@ -52,6 +54,7 @@ halcyon restore iPhone_5.5_P3_15.8.x_Restore.ipsw                # штатны�
 
 ## Документы
 
+- [FEDORA_SETUP](docs/FEDORA_SETUP.md): что ставить на Fedora и какие IPSW качать
 - [ROADMAP](docs/ROADMAP.md): этапы EVT0 → Release и критерии выхода из каждого
 - [HARDWARE](docs/HARDWARE.md): матрица оборудования и реалистичные ожидания
 - [FIRMWARE_RESEARCH](docs/FIRMWARE_RESEARCH.md): план сравнения iOS 15 и 16, выбор доноров
