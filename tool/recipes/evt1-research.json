@@ -1,0 +1,38 @@
+{
+  "name": "evt1-research",
+  "base":  { "product": "iPhone9,2", "board": "d11ap",  "version": "15.8.8" },
+  "donor": { "product": "iPad7,12",  "board": "j172ap", "version": "16.6.1" },
+  "steps": [
+    {
+      "id": "extract-base",
+      "kind": "extract",
+      "desc": "Извлечь KernelCache, DeviceTree, SEP из iOS 15 для D11",
+      "outputs": [],
+      "args": { "from": "base", "ipsw": "SET_ME_base.ipsw", "dir": "base",
+                "components": ["KernelCache", "DeviceTree", "RestoreSEP", "SEP"] }
+    },
+    {
+      "id": "extract-donor",
+      "kind": "extract",
+      "desc": "Извлечь те же компоненты из iPadOS 16.6.1 для J172",
+      "outputs": [],
+      "args": { "from": "donor", "ipsw": "SET_ME_donor.ipsw", "dir": "donor",
+                "components": ["KernelCache", "DeviceTree", "RestoreSEP", "SEP"] }
+    },
+    {
+      "id": "compat-map",
+      "kind": "research",
+      "desc": "d11ctl compat kexts/dt по извлечённым файлам → docs/compat/*.md"
+    },
+    {
+      "id": "dt-merge",
+      "kind": "research",
+      "desc": "EVT2: слияние DeviceTree D11 (периферия) с J172 (ожидания ядра 16)"
+    },
+    {
+      "id": "kc-patch",
+      "kind": "research",
+      "desc": "EVT2: патчи kernelcache (пересадка kext'ов, boot-args) — локально, не в репозиторий"
+    }
+  ]
+}

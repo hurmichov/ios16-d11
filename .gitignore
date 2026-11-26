@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Рабочие каталоги утилиты: сюда скачиваются и распаковываются образы Apple.
+# Они НИКОГДА не попадают в репозиторий.
+work/
+cache/
+logs/
+backups/
+
+# Проприетарные бинарники Apple (страховка на случай ручного копирования)
+*.ipsw
+*.im4p
+*.img4
+*.im4m
+*.shsh
+*.shsh2
+*.dmg
+*.aea
+kernelcache*
+DeviceTree*
+iBSS*
+iBEC*
+iBoot*
+LLB*
+sep-firmware*
+*.bbfw
+dyld_shared_cache*
+
+# Сборка прошивки RP2350
+firmware/rp2350/build/

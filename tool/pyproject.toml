@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "d11ctl"
+version = "0.1.0"
+description = "Исследовательская утилита порта iOS 16 на iPhone 7 Plus (D11/D111, T8010)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+dependencies = []
+
+[project.scripts]
+d11ctl = "d11ctl.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["d11ctl*"]

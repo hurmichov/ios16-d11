@@ -1,0 +1,20 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  tool:
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: dnf install -y python3 python3-pytest
+      - run: cd tool && python3 -m pytest -q tests
+      - run: cd tool && python3 -m d11ctl --help
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi libnewlib-arm-none-eabi cmake ninja-build
+      - run: git clone --depth 1 -b 2.1.1 https://github.com/raspberrypi/pico-sdk ~/pico-sdk && git -C ~/pico-sdk submodule update --init --depth 1 lib/tinyusb
+      - run: PICO_SDK_PATH=~/pico-sdk ./scripts/build-firmware.sh
+      - uses: actions/upload-artifact@v4
+        with: { name: d11diag-uf2, path: firmware/rp2350/build/d11diag.uf2 }
