@@ -59,6 +59,11 @@ DCSD (serial по Lightning) — **рекомендуется, но не обя�
 Единственный случай, где DCSD фактически незаменим: ранний зависон до поднятия USB-гаджета и
 фреймбуфера, без записи паники. Все остальные шаги EVT3 от него не зависят.
 
+Как выглядит такой первый бут — иллюстративный (синтетический) лог в
+[`docs/samples/verbose-boot-example.log`](samples/verbose-boot-example.log):
+`checkm8 → pongoOS → ядро 16 без SEP → дисплей поднялся → падение на root device`.
+Прогнать: `halcyon boot-monitor --file docs/samples/verbose-boot-example.log -v`.
+
 **Exit:** ядро стабильно доходит до launchd; каждый сбой классифицирован (через любой из каналов).
 
 ## EVT4 — Userspace
