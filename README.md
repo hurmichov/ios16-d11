@@ -1,8 +1,12 @@
 # ios16-d11 · Halcyon
 
 Экспериментальный исследовательский порт **iOS 16** на **iPhone 7 Plus** (A10 Fusion, T8010,
-`iPhone9,2` D11AP / `iPhone9,4` D111AP) и собственная Linux-утилита **Halcyon** для сборки,
+`iPhone9,2` D11AP / `iPhone9,4` D111AP) и собственная утилита **Halcyon** для сборки,
 диагностики и восстановления.
+
+> **Подход:** на базе yigitzra1n, хост — **macOS** (нативный APFS, Apple-тулзы). Аналитика и
+> диагностика Halcyon кросс-платформенны (работают и на Fedora). Решение и его обоснование —
+> [docs/APPROACH.md](docs/APPROACH.md).
 
 > Статус: **EVT0 — Environment.** Есть каркас утилиты, анализ прошивок и система сборки в режиме
 > dry-run. Шаги, которые реально патчат образы, пока не реализованы: они явно падают, а не
@@ -54,7 +58,9 @@ halcyon restore iPhone_5.5_P3_15.8.x_Restore.ipsw                # штатны�
 
 ## Документы
 
-- [FEDORA_SETUP](docs/FEDORA_SETUP.md): что ставить на Fedora и какие IPSW качать
+- [APPROACH](docs/APPROACH.md): почему база yigitzra1n и macOS-хост (решение)
+- [MACOS_SETUP](docs/MACOS_SETUP.md): настройка основного macOS-хоста и какие IPSW качать
+- [FEDORA_SETUP](docs/FEDORA_SETUP.md): Linux для аналитики/диагностики (подмножество EVT1)
 - [ROADMAP](docs/ROADMAP.md): этапы EVT0 → Release и критерии выхода из каждого
 - [HARDWARE](docs/HARDWARE.md): матрица оборудования и реалистичные ожидания
 - [FIRMWARE_RESEARCH](docs/FIRMWARE_RESEARCH.md): план сравнения iOS 15 и 16, выбор доноров

@@ -23,14 +23,17 @@ def _guard(a) -> Guard:
 # ------------------------------------------------------------------ commands
 
 def cmd_doctor(a, s: Session) -> int:
+    import sys as _sys
     res = deps.check()
     for d, ok in res:
         flag = "ok " if ok else ("MISS" if d.required else "opt ")
         print(f"[{flag}] {d.name:<20} {d.why}")
-    s.event("doctor", missing=[d.name for d, ok in res if not ok])
-    cmd = deps.dnf_command(res, include_optional=a.all)
-    if cmd:
-        print(f"\nУстановить:\n  {cmd}")
+    s.event("doctor", platform=_sys.platform, missing=[d.name for d, ok in res if not ok])
+    hints = deps.install_hints(res, include_optional=a.all)
+    if hints:
+        print(f"\nУстановить ({'macOS' if _sys.platform == 'darwin' else 'Linux'}):")
+        for h in hints:
+            print(f"  {h}")
         return 1 if any(not ok and d.required for d, ok in res) else 0
     print("\nВсе зависимости на месте.")
     return 0

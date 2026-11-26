@@ -2,11 +2,14 @@
 
 Каждый этап закрывается только после выполнения критериев выхода (Exit criteria).
 
+> Подход: база yigitzra1n, хост macOS — см. [APPROACH.md](APPROACH.md).
+
 ## EVT0 — Environment ← текущий
 
 - [x] структура репозитория, лицензия, `.gitignore`, который не пропускает файлы Apple
 - [x] Halcyon: 10 модулей, CLI, логи, dry-run, проверка модели
-- [x] `halcyon doctor`: проверка зависимостей и команда для dnf
+- [x] `halcyon doctor`: платформенная проверка зависимостей (brew на macOS, dnf на Linux)
+- [ ] настроен macOS-хост (Xcode CLT + Homebrew) — см. [MACOS_SETUP.md](MACOS_SETUP.md)
 - [x] RPM spec и правила udev
 - [x] прошивка RP2350: мост UART → USB-CDC с метками времени, измерение уровня сигнала через ADC
 - [x] тесты на синтетических IPSW
@@ -27,14 +30,15 @@
 
 **Exit:** карта совместимости по каждому пункту HARDWARE.md с оценкой «есть / нужен порт / блокер».
 
-## EVT2 — Build System
+## EVT2 — Build System (на macOS)
 
 - `kernel-patch`, `kext-relink`, `dt-merge`, `trustcache`, `ramdisk`, `rootfs-assemble` (сейчас заглушки)
-- инструменты C/C++ в `tools/`: патчер Mach-O, линковщик kext (на базе LLVM libObject), сборщик trustcache
-- APFS: сборка RootFS под Linux (apfs-fuse только читает; для записи нужен свой путь, это открытый вопрос)
+- инструменты C/C++: патчер Mach-O, линковщик kext (на базе LLVM libObject), сборщик trustcache
+- **APFS/RootFS — нативными средствами macOS** (`asr`, `hdiutil`), img4 через `img4tool`.
+  Это снимает прежний блокер «запись APFS под Linux»
 - воспроизводимость: два запуска с одинаковым профилем дают одинаковый `build-manifest.json`
 
-**Exit:** образ собирается целиком под Linux и описан build-manifest.json.
+**Exit:** образ собирается целиком на macOS и описан build-manifest.json.
 
 ## EVT3 — Boot Validation
 
