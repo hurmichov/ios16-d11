@@ -1,0 +1,1424 @@
+From d6f19ab20f55b6c2e342d8d066d56804e4682e16 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 27 Nov 2026 04:27:36 +0000
+Subject: [PATCH] GTX 1660 / 6 GB: VRAM tier defaults, VICTORY_OUTPUT, FSR 1 at
+ the present, presets
+
+- vram_tier.rs: on a card whose budget is 6.5 GB or less (VICTORY_VRAM_TIER=auto|6gb|off)
+  the card buffer copies (512 MB), texture copies (512 MB), room kept for render targets
+  (2,304 MB), shader-visible card memory (768 MB) and texture staging (64 MB/frame) take
+  the 6 GB values Protonida ran with; explicit settings still win.
+- hooks.rs: VICTORY_OUTPUT=<w>x<h>, the title's output size (one of its modes), ported
+  from deynesdev/Protonida; checked against the 1.0.2.1 hash and the bytes it replaces.
+- host/fsr.rs: VICTORY_FSR=1, FSR 1 (EASU + RCAS after AMD's ffx_fsr1.h, MIT) at the
+  present, to the screen's size (VICTORY_FSR_OUTPUT, VICTORY_FSR_SHARPNESS). On a
+  Series S present only the world plane is enlarged; the interface is composed over it.
+  Falls back to the compose pass's stretch if the host refuses the pipelines.
+- scripts/play-gtx1660.ps1, Play-GTX1660.cmd: presets perf540 (540p -> 720p by the
+  title's upscaler, FSR 1 to 1080p), test720, half (Series S at half scale), native.
+- docs/GTX1660.ru.md. Not measured on a GTX 1660 yet.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01WivgrhD8sETrePLpFesrny
+---
+ Play-GTX1660.cmd                     |   7 +
+ README.md                            |   7 +
+ crates/victory-gpu/src/draw.rs       |   1 +
+ crates/victory-gpu/src/host.rs       |  76 +++-
+ crates/victory-gpu/src/host/fsr.rs   | 571 +++++++++++++++++++++++++++
+ crates/victory-gpu/src/lib.rs        |   2 +
+ crates/victory-gpu/src/resource.rs   |  27 +-
+ crates/victory-gpu/src/shadow.rs     |  17 +-
+ crates/victory-gpu/src/vram_tier.rs  | 114 ++++++
+ crates/victory-loader/src/hooks.rs   | 148 ++++++-
+ crates/victory-loader/src/windows.rs |   5 +-
+ docs/GTX1660.ru.md                   | 110 ++++++
+ scripts/play-gtx1660.ps1             |  64 +++
+ 13 files changed, 1128 insertions(+), 21 deletions(-)
+ create mode 100644 Play-GTX1660.cmd
+ create mode 100644 crates/victory-gpu/src/host/fsr.rs
+ create mode 100644 crates/victory-gpu/src/vram_tier.rs
+ create mode 100644 docs/GTX1660.ru.md
+ create mode 100644 scripts/play-gtx1660.ps1
+
+diff --git a/Play-GTX1660.cmd b/Play-GTX1660.cmd
+new file mode 100644
+index 0000000..099c39d
+--- /dev/null
++++ b/Play-GTX1660.cmd
+@@ -0,0 +1,7 @@
++@echo off
++rem GTX 1660 / 6 GB presets: Play-GTX1660.cmd "D:\path\to\game_scarlett_master.exe" [perf540^|test720^|half^|native]
++rem See docs\GTX1660.ru.md.
++if "%~1"=="" (echo Usage: %~nx0 "path\to\your\game_scarlett_master.exe" [perf540^|test720^|half^|native] & exit /b 1)
++set "PRESET=%~2"
++if "%PRESET%"=="" set "PRESET=perf540"
++powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\play-gtx1660.ps1" -Exe "%~1" -Preset %PRESET%
+diff --git a/README.md b/README.md
+index 1021451..ca3aff0 100644
+--- a/README.md
++++ b/README.md
+@@ -107,6 +107,13 @@ unlit and the sea shows black rectangles near the horizon.
+ - `VICTORY_NO_WATCHDOG`, `VICTORY_NULL_MAGENTA` (diagnostics) and the cap of 262,144
+   remapped ranges.
+ 
++## GTX 1660 and other 6 GB cards
++
++Branch `gtx1660`: defaults for 6 GB of video memory (`VICTORY_VRAM_TIER`), the title's
++output size (`VICTORY_OUTPUT`), FSR 1 at the present (`VICTORY_FSR`) and presets for a
++GTX 1660 on a 1080p screen (`Play-GTX1660.cmd`): [docs/GTX1660.ru.md](docs/GTX1660.ru.md)
++(in Russian). Not measured on such a card yet.
++
+ ## How to run
+ 
+ ```powershell
+diff --git a/crates/victory-gpu/src/draw.rs b/crates/victory-gpu/src/draw.rs
+index e12d8f2..17821fc 100644
+--- a/crates/victory-gpu/src/draw.rs
++++ b/crates/victory-gpu/src/draw.rs
+@@ -2130,6 +2130,7 @@ impl State {
+         });
+         let per_frame = match asked {
+             Some(mb) => mb << 20,
++            None if crate::vram_tier::small(memory.map(|[budget, ..]| budget)) => crate::vram_tier::TEXTURE_STAGE,
+             None => staging_budget_per_frame(memory.map(|[budget, ..]| budget)),
+         };
+         static FRAME: AtomicU64 = AtomicU64::new(u64::MAX);
+diff --git a/crates/victory-gpu/src/host.rs b/crates/victory-gpu/src/host.rs
+index 0385b43..3b52ff3 100644
+--- a/crates/victory-gpu/src/host.rs
++++ b/crates/victory-gpu/src/host.rs
+@@ -3616,6 +3616,8 @@ fn late_line(frames: f64) {
+ pub(crate) mod aside;
+ pub(crate) mod awake;
+ mod card_steps;
++// FSR 1 at the present (`VICTORY_FSR`).
++mod fsr;
+ #[cfg(any(test, feature = "diagnostics"))]
+ pub(crate) mod indirects;
+ #[cfg(feature = "diagnostics")]
+@@ -8821,6 +8823,8 @@ struct Presenter {
+     ahead: Vec<(HostList, u64)>,
+     hwnd: HWND,
+     meter: Meter,
++    /// FSR 1's textures of its own ([`fsr`]).
++    fsr: fsr::Fsr,
+     #[cfg(feature = "diagnostics")]
+     panel: panel::Panel,
+ }
+@@ -9204,8 +9208,11 @@ impl Host {
+             return None;
+         };
+         let (width, height) = (desc.Width as u32, desc.Height);
++        // Larger than the title made it with FSR 1 on ([`fsr`]).
++        let shown = fsr::shown((width, height));
++        let enlarge = shown != (width, height);
+         let mut presenter = self.presenter.lock().unwrap_or_else(|e| e.into_inner());
+-        let p = self.ready_presenter(&mut presenter, width, height, format, frame)?;
++        let p = self.ready_presenter(&mut presenter, shown.0, shown.1, format, frame)?;
+         let state = D3D12_RESOURCE_STATES(state as i32);
+         // SAFETY: our swap chain, list and a live source texture.
+         unsafe {
+@@ -9237,15 +9244,35 @@ impl Host {
+             };
+             copy.reset();
+             let list = &copy.list;
+-            list.ResourceBarrier(&[
+-                transition(texture, state, D3D12_RESOURCE_STATE_COPY_SOURCE),
+-                transition(
+-                    &back,
+-                    D3D12_RESOURCE_STATE_PRESENT,
+-                    D3D12_RESOURCE_STATE_COPY_DEST,
+-                ),
+-            ]);
+-            list.CopyResource(&back, texture);
++            if enlarge {
++                // EASU and RCAS into the back buffer (or, if the host refused
++                // them, the compose pass's smooth stretch); then the states
++                // the copy below would have left, for what follows.
++                let read = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++                let target = D3D12_RESOURCE_STATE_RENDER_TARGET;
++                let mut before = vec![transition(&back, D3D12_RESOURCE_STATE_PRESENT, target)];
++                if state != read {
++                    before.push(transition(texture, state, read));
++                }
++                list.ResourceBarrier(&before);
++                if !p.fsr.record(copy, texture, &back, shown, format) && composes(format) {
++                    record_compose(list, &back, (shown.0, shown.1, format), &[(texture, read.0 as u32, None)]);
++                }
++                list.ResourceBarrier(&[
++                    transition(texture, read, D3D12_RESOURCE_STATE_COPY_SOURCE),
++                    transition(&back, target, D3D12_RESOURCE_STATE_COPY_DEST),
++                ]);
++            } else {
++                list.ResourceBarrier(&[
++                    transition(texture, state, D3D12_RESOURCE_STATE_COPY_SOURCE),
++                    transition(
++                        &back,
++                        D3D12_RESOURCE_STATE_PRESENT,
++                        D3D12_RESOURCE_STATE_COPY_DEST,
++                    ),
++                ]);
++                list.CopyResource(&back, texture);
++            }
+             #[cfg(feature = "diagnostics")]
+             let capture = crate::capture::wanted(frame)
+                 .then(|| crate::capture::read_back(&self.device, list, texture))
+@@ -9255,7 +9282,7 @@ impl Host {
+             #[cfg(feature = "diagnostics")]
+             let watched = crate::popwatch::take(&self.device, list, texture);
+             #[cfg(feature = "diagnostics")]
+-            p.panel.draw(self, copy, &back, (width, height), format);
++            p.panel.draw(self, copy, &back, shown, format);
+             #[cfg(not(feature = "diagnostics"))]
+             let _ = frame;
+             list.ResourceBarrier(&[
+@@ -9372,7 +9399,13 @@ impl Host {
+         // SAFETY: live resources.
+         let descs: Vec<D3D12_RESOURCE_DESC> = planes.iter().map(|(t, ..)| unsafe { t.GetDesc() }).collect();
+         let largest = descs.iter().max_by_key(|d| d.Width * u64::from(d.Height))?;
+-        let (width, height) = (largest.Width as u32, largest.Height);
++        // With FSR 1 on ([`fsr`]) the world, the bottom plane shown whole,
++        // is enlarged to the window's size and the rest composed over it
++        // at that size.
++        let world = (descs[0].Width as u32, descs[0].Height);
++        let shown = fsr::shown(world);
++        let enlarge = shown != world && planes[0].2.is_none();
++        let (width, height) = if enlarge { shown } else { (largest.Width as u32, largest.Height) };
+         let format = swap_format(descs[0].Format);
+         let Some(format) = format.filter(|f| composes(*f)) else {
+             return self.present(first, first_state, frame);
+@@ -9425,7 +9458,23 @@ impl Host {
+             let mut before = moves(true);
+             before.push(transition(&back, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+             list.ResourceBarrier(&before);
+-            record_compose(list, &back, (width, height, format), planes);
++            let target = D3D12_RESOURCE_STATE_RENDER_TARGET;
++            let enlarged = if enlarge {
++                p.fsr.world.get(shown, format).filter(|world| p.fsr.record(copy, first, world, shown, format))
++            } else {
++                None
++            };
++            match enlarged {
++                Some(world) => {
++                    copy.keep(&world);
++                    list.ResourceBarrier(&[transition(&world, target, read)]);
++                    let mut over: Vec<Shown> = planes.to_vec();
++                    over[0] = (&world, read.0 as u32, None);
++                    record_compose(list, &back, (width, height, format), &over);
++                    list.ResourceBarrier(&[transition(&world, read, target)]);
++                }
++                None => record_compose(list, &back, (width, height, format), planes),
++            }
+             #[cfg(feature = "diagnostics")]
+             let capture = crate::capture::wanted(frame).then(|| {
+                 list.ResourceBarrier(&[transition(
+@@ -9505,6 +9554,7 @@ impl Host {
+                 ahead: Vec::new(),
+                 hwnd,
+                 meter: Meter::new(),
++                fsr: fsr::Fsr::default(),
+                 #[cfg(feature = "diagnostics")]
+                 panel: panel::Panel::new(),
+             })
+diff --git a/crates/victory-gpu/src/host/fsr.rs b/crates/victory-gpu/src/host/fsr.rs
+new file mode 100644
+index 0000000..e49fdc2
+--- /dev/null
++++ b/crates/victory-gpu/src/host/fsr.rs
+@@ -0,0 +1,571 @@
++//! AMD FidelityFX Super Resolution 1 at the present (`VICTORY_FSR=1`): the
++//! world's picture, as the title made it, enlarged to the window's size by
++//! EASU (edge-adaptive spatial upsampling) and sharpened by RCAS (robust
++//! contrast-adaptive sharpening), in place of the copy or stretch the present
++//! did.
++//!
++//! What for: on a card too slow for the title's own sizes (a GTX 1660 at
++//! 1920x1080 on the Series S profile) the title is set to a smaller output
++//! (`VICTORY_OUTPUT=1280x720`, its own upscaler below that through
++//! `VICTORY_RENDER_SCALE`) and this pass brings it up to the screen. On a
++//! Series S present of two planes only the world (the bottom plane) goes
++//! through it; the interface is composed over the enlarged world at the
++//! window's size as before, so text and the HUD stay sharp.
++//!
++//! - `VICTORY_FSR=1` turns it on (off without it).
++//! - `VICTORY_FSR_OUTPUT=<w>x<h>`: the size shown (default: the primary
++//!   screen's). The picture keeps its aspect inside it; nothing is done when
++//!   it would not be larger than the title's.
++//! - `VICTORY_FSR_SHARPNESS=<stops>`: RCAS, 0 the sharpest to 2 (default
++//!   0.25; AMD's default is 0.2).
++//!
++//! The shaders follow AMD's `ffx_fsr1.h` (FidelityFX FSR 1.0, MIT; Copyright
++//! (c) 2021 Advanced Micro Devices, Inc.) in plain 32-bit float HLSL: EASU's
++//! twelve taps around the position, its direction and length analysis of
++//! the four nearest texels' luma, its Lanczos-2 approximation and the
++//! deringing clamp; RCAS's five taps and limit, without its noise detection.
++
++use super::*;
++
++/// The two passes: one vertex shader of a triangle over the target and the
++/// two pixel shaders, both reading texels (`Load`, edges clamped) of the one
++/// texture in the table.
++const FSR: &str = r#"
++#define RS "RootConstants(num32BitConstants = 8, b0), DescriptorTable(SRV(t0), visibility = SHADER_VISIBILITY_PIXEL)"
++cbuffer sizes : register(b0) {
++    float2 source;
++    float2 shown;
++    float sharpness;
++    float3 unused;
++};
++Texture2D<float4> picture : register(t0);
++struct Corner {
++    float4 at : SV_Position;
++};
++[RootSignature(RS)]
++Corner corner(uint i : SV_VertexID) {
++    Corner c;
++    float2 p = float2(float(i & 1) * 2.0, float(i >> 1) * 2.0);
++    c.at = float4(p.x * 2.0 - 1.0, 1.0 - p.y * 2.0, 0.0, 1.0);
++    return c;
++}
++float3 fetch(int2 p) {
++    int2 most = int2(source) - int2(1, 1);
++    return picture.Load(int3(clamp(p, int2(0, 0), most), 0)).rgb;
++}
++float luma(float3 c) {
++    return c.b * 0.5 + (c.r * 0.5 + c.g);
++}
++void easu_tap(inout float3 aC, inout float aW, float2 off, float2 dir, float2 len, float lob, float clp, float3 c) {
++    float2 v;
++    v.x = off.x * dir.x + off.y * dir.y;
++    v.y = off.x * -dir.y + off.y * dir.x;
++    v *= len;
++    float d2 = min(v.x * v.x + v.y * v.y, clp);
++    float wB = 2.0 / 5.0 * d2 - 1.0;
++    float wA = lob * d2 - 1.0;
++    wB *= wB;
++    wA *= wA;
++    wB = 25.0 / 16.0 * wB - (25.0 / 16.0 - 1.0);
++    float w = wB * wA;
++    aC += c * w;
++    aW += w;
++}
++void easu_set(inout float2 dir, inout float len, float w, float lA, float lB, float lC, float lD, float lE) {
++    float lenX = max(abs(lD - lC), abs(lC - lB));
++    lenX = 1.0 / max(lenX, 1.0 / 65536.0);
++    float dirX = lD - lB;
++    dir.x += dirX * w;
++    lenX = saturate(abs(dirX) * lenX);
++    lenX *= lenX;
++    len += lenX * w;
++    float lenY = max(abs(lE - lC), abs(lC - lA));
++    lenY = 1.0 / max(lenY, 1.0 / 65536.0);
++    float dirY = lE - lA;
++    dir.y += dirY * w;
++    lenY = saturate(abs(dirY) * lenY);
++    lenY *= lenY;
++    len += lenY * w;
++}
++[RootSignature(RS)]
++float4 easu(Corner c) : SV_Target {
++    //    b c
++    //  e f g h
++    //  i j k l
++    //    n o
++    float2 pp = c.at.xy * (source / shown) - 0.5;
++    float2 fp = floor(pp);
++    pp -= fp;
++    int2 at = int2(fp);
++    float3 b = fetch(at + int2(0, -1));
++    float3 cc = fetch(at + int2(1, -1));
++    float3 e = fetch(at + int2(-1, 0));
++    float3 f = fetch(at);
++    float3 g = fetch(at + int2(1, 0));
++    float3 h = fetch(at + int2(2, 0));
++    float3 i = fetch(at + int2(-1, 1));
++    float3 j = fetch(at + int2(0, 1));
++    float3 k = fetch(at + int2(1, 1));
++    float3 l = fetch(at + int2(2, 1));
++    float3 n = fetch(at + int2(0, 2));
++    float3 o = fetch(at + int2(1, 2));
++    float bL = luma(b), cL = luma(cc), eL = luma(e), fL = luma(f), gL = luma(g), hL = luma(h);
++    float iL = luma(i), jL = luma(j), kL = luma(k), lL = luma(l), nL = luma(n), oL = luma(o);
++    float2 dir = float2(0.0, 0.0);
++    float len = 0.0;
++    easu_set(dir, len, (1.0 - pp.x) * (1.0 - pp.y), bL, eL, fL, gL, jL);
++    easu_set(dir, len, pp.x * (1.0 - pp.y), cL, fL, gL, hL, kL);
++    easu_set(dir, len, (1.0 - pp.x) * pp.y, fL, iL, jL, kL, nL);
++    easu_set(dir, len, pp.x * pp.y, gL, jL, kL, lL, oL);
++    float dirR = dir.x * dir.x + dir.y * dir.y;
++    bool zero = dirR < 1.0 / 32768.0;
++    dirR = zero ? 1.0 : rsqrt(dirR);
++    dir.x = zero ? 1.0 : dir.x;
++    dir *= dirR;
++    len = len * 0.5;
++    len *= len;
++    float stretch = (dir.x * dir.x + dir.y * dir.y) / max(abs(dir.x), abs(dir.y));
++    float2 len2 = float2(1.0 + (stretch - 1.0) * len, 1.0 - 0.5 * len);
++    float lob = 0.5 + ((1.0 / 4.0 - 0.04) - 0.5) * len;
++    float clp = 1.0 / lob;
++    float3 mn = min(min(f, g), min(j, k));
++    float3 mx = max(max(f, g), max(j, k));
++    float3 aC = float3(0.0, 0.0, 0.0);
++    float aW = 0.0;
++    easu_tap(aC, aW, float2(0.0, -1.0) - pp, dir, len2, lob, clp, b);
++    easu_tap(aC, aW, float2(1.0, -1.0) - pp, dir, len2, lob, clp, cc);
++    easu_tap(aC, aW, float2(-1.0, 1.0) - pp, dir, len2, lob, clp, i);
++    easu_tap(aC, aW, float2(0.0, 1.0) - pp, dir, len2, lob, clp, j);
++    easu_tap(aC, aW, float2(0.0, 0.0) - pp, dir, len2, lob, clp, f);
++    easu_tap(aC, aW, float2(-1.0, 0.0) - pp, dir, len2, lob, clp, e);
++    easu_tap(aC, aW, float2(1.0, 1.0) - pp, dir, len2, lob, clp, k);
++    easu_tap(aC, aW, float2(2.0, 1.0) - pp, dir, len2, lob, clp, l);
++    easu_tap(aC, aW, float2(2.0, 0.0) - pp, dir, len2, lob, clp, h);
++    easu_tap(aC, aW, float2(1.0, 0.0) - pp, dir, len2, lob, clp, g);
++    easu_tap(aC, aW, float2(1.0, 2.0) - pp, dir, len2, lob, clp, o);
++    easu_tap(aC, aW, float2(0.0, 2.0) - pp, dir, len2, lob, clp, n);
++    float3 pix = abs(aW) < 1.0e-6 ? f : min(mx, max(mn, aC / aW));
++    return float4(pix, 1.0);
++}
++[RootSignature(RS)]
++float4 rcas(Corner c) : SV_Target {
++    //    b
++    //  d e f
++    //    h
++    int2 at = int2(c.at.xy);
++    float3 b = fetch(at + int2(0, -1));
++    float3 d = fetch(at + int2(-1, 0));
++    float3 e = fetch(at);
++    float3 f = fetch(at + int2(1, 0));
++    float3 h = fetch(at + int2(0, 1));
++    float3 mn4 = min(min(b, d), min(f, h));
++    float3 mx4 = max(max(b, d), max(f, h));
++    float3 hitMin = min(mn4, e) / max(4.0 * mx4, 1.0e-5);
++    float3 hitMax = (1.0 - max(mx4, e)) / min(4.0 * mn4 - 4.0, -1.0e-5);
++    float3 lobe3 = max(-hitMin, hitMax);
++    // FSR_RCAS_LIMIT: 0.25 - 1/16.
++    float lobe = max(-(0.25 - 1.0 / 16.0), min(max(lobe3.r, max(lobe3.g, lobe3.b)), 0.0)) * sharpness;
++    float3 pix = (lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0);
++    return float4(pix, 1.0);
++}
++"#;
++
++/// Whether the pass is asked for (`VICTORY_FSR`).
++pub(super) fn on() -> bool {
++    static ON: OnceLock<bool> = OnceLock::new();
++    *ON.get_or_init(|| std::env::var_os("VICTORY_FSR").is_some_and(|v| v != "0"))
++}
++
++/// RCAS's sharpening, as the pass is told it (`exp2(-stops)`).
++fn sharpness() -> f32 {
++    static SHARP: OnceLock<f32> = OnceLock::new();
++    *SHARP.get_or_init(|| {
++        let stops = std::env::var("VICTORY_FSR_SHARPNESS")
++            .ok()
++            .and_then(|v| v.trim().parse::<f32>().ok())
++            .filter(|s| s.is_finite())
++            .map_or(0.25, |s| s.clamp(0.0, 2.0));
++        (-stops).exp2()
++    })
++}
++
++/// The size asked to be shown (`VICTORY_FSR_OUTPUT`), else the primary
++/// screen's.
++fn screen() -> Option<(u32, u32)> {
++    static SIZE: OnceLock<Option<(u32, u32)>> = OnceLock::new();
++    *SIZE.get_or_init(|| {
++        let asked = std::env::var("VICTORY_FSR_OUTPUT")
++            .ok()
++            .and_then(|v| parse_size(&v));
++        let size = asked.or_else(|| {
++            // SAFETY: plain queries.
++            let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
++            (w > 0 && h > 0).then_some((w as u32, h as u32))
++        });
++        tracing::info!(
++            ?size,
++            asked = asked.is_some(),
++            "FSR 1: the size it enlarges to (VICTORY_FSR_OUTPUT)"
++        );
++        size
++    })
++}
++
++pub(super) fn parse_size(text: &str) -> Option<(u32, u32)> {
++    let (w, h) = text.trim().split_once(['x', 'X'])?;
++    let size: (u32, u32) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
++    ((320..=7680).contains(&size.0) && (180..=4320).contains(&size.1)).then_some(size)
++}
++
++/// The size a picture of `width` x `height` is shown at inside `room`: as
++/// large as fits with its aspect kept, at most three times as large, and
++/// the picture's own size when that would be no larger.
++pub(super) fn fit((width, height): (u32, u32), (room_w, room_h): (u32, u32)) -> (u32, u32) {
++    if width == 0 || height == 0 {
++        return (width, height);
++    }
++    let scale = (f64::from(room_w) / f64::from(width))
++        .min(f64::from(room_h) / f64::from(height))
++        .min(3.0);
++    if scale <= 1.0 {
++        return (width, height);
++    }
++    let shown = (
++        (f64::from(width) * scale).round() as u32,
++        (f64::from(height) * scale).round() as u32,
++    );
++    if shown.0 <= width && shown.1 <= height {
++        (width, height)
++    } else {
++        shown
++    }
++}
++
++/// The size a picture the title made of `size` is shown at: larger only
++/// with the pass on.
++pub(super) fn shown(size: (u32, u32)) -> (u32, u32) {
++    match (on(), screen()) {
++        (true, Some(room)) => fit(size, room),
++        _ => size,
++    }
++}
++
++/// EASU's and RCAS's pipelines for a target of `format` (`None`: the host
++/// refused; said once).
++fn pipelines(format: DXGI_FORMAT) -> Option<(PlanePipeline, ID3D12PipelineState)> {
++    type Made = (i32, Option<(PlanePipeline, ID3D12PipelineState)>);
++    static MADE: Mutex<Vec<Made>> = Mutex::new(Vec::new());
++    let mut made = MADE.lock().unwrap_or_else(|e| e.into_inner());
++    if let Some((_, pipelines)) = made.iter().find(|m| m.0 == format.0) {
++        return pipelines.clone();
++    }
++    let make = || -> windows::core::Result<(PlanePipeline, ID3D12PipelineState)> {
++        use windows::core::s;
++        let device = &host().ok_or_else(windows::core::Error::empty)?.device;
++        let vs = compile(FSR, s!("corner"), s!("vs_5_1"))?;
++        let easu = compile(FSR, s!("easu"), s!("ps_5_1"))?;
++        let rcas = compile(FSR, s!("rcas"), s!("ps_5_1"))?;
++        let code = |bytes: &[u8]| D3D12_SHADER_BYTECODE {
++            pShaderBytecode: bytes.as_ptr().cast(),
++            BytecodeLength: bytes.len(),
++        };
++        let mut targets = [DXGI_FORMAT_UNKNOWN; 8];
++        targets[0] = format;
++        // SAFETY: the root signature is inside the pixel shaders (the same
++        // one in both); the descriptions point at live data and never
++        // release their pointer.
++        unsafe {
++            let root: ID3D12RootSignature = device.CreateRootSignature(0, &easu[..])?;
++            let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
++                pRootSignature: std::mem::transmute_copy(&root),
++                VS: code(&vs[..]),
++                PS: code(&easu[..]),
++                SampleMask: u32::MAX,
++                RasterizerState: D3D12_RASTERIZER_DESC {
++                    FillMode: D3D12_FILL_MODE_SOLID,
++                    CullMode: D3D12_CULL_MODE_NONE,
++                    DepthClipEnable: true.into(),
++                    ..Default::default()
++                },
++                PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
++                NumRenderTargets: 1,
++                RTVFormats: targets,
++                SampleDesc: DXGI_SAMPLE_DESC {
++                    Count: 1,
++                    Quality: 0,
++                },
++                ..Default::default()
++            };
++            desc.BlendState.RenderTarget[0].RenderTargetWriteMask =
++                D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8;
++            let easu: ID3D12PipelineState = device.CreateGraphicsPipelineState(&desc)?;
++            desc.PS = code(&rcas[..]);
++            let rcas: ID3D12PipelineState = device.CreateGraphicsPipelineState(&desc)?;
++            Ok(((root, easu), rcas))
++        }
++    };
++    let pipelines = match make() {
++        Ok(p) => {
++            tracing::info!(
++                format = format.0,
++                sharpness = sharpness(),
++                "FSR 1: EASU and RCAS pipelines made"
++            );
++            Some(p)
++        }
++        Err(e) => {
++            tracing::warn!(error = %e, format = format.0, "FSR 1: no pipelines; the picture is shown as before");
++            None
++        }
++    };
++    made.push((format.0, pipelines.clone()));
++    pipelines
++}
++
++/// A render target of the presenter's own, made again for another size or
++/// format.
++#[derive(Default)]
++pub(super) struct Target {
++    made: Option<(ID3D12Resource, u32, u32, i32)>,
++}
++
++impl Target {
++    /// The texture, in the render target state between uses.
++    pub(super) fn get(
++        &mut self,
++        (width, height): (u32, u32),
++        format: DXGI_FORMAT,
++    ) -> Option<ID3D12Resource> {
++        if let Some((texture, w, h, f)) = &self.made
++            && (*w, *h, *f) == (width, height, format.0)
++        {
++            return Some(texture.clone());
++        }
++        let host = host()?;
++        let desc = D3D12_RESOURCE_DESC {
++            Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
++            Width: u64::from(width),
++            Height: height,
++            DepthOrArraySize: 1,
++            MipLevels: 1,
++            Format: format,
++            SampleDesc: DXGI_SAMPLE_DESC {
++                Count: 1,
++                Quality: 0,
++            },
++            Flags: D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
++            ..Default::default()
++        };
++        let heap = D3D12_HEAP_PROPERTIES {
++            Type: D3D12_HEAP_TYPE_DEFAULT,
++            ..Default::default()
++        };
++        let mut made: Option<ID3D12Resource> = None;
++        // SAFETY: plain creation.
++        let result = unsafe {
++            host.device.CreateCommittedResource(
++                &heap,
++                D3D12_HEAP_FLAG_NONE,
++                &desc,
++                D3D12_RESOURCE_STATE_RENDER_TARGET,
++                None,
++                &mut made,
++            )
++        };
++        if let Err(e) = result {
++            tracing::warn!(error = %e, width, height, "FSR 1: no texture of its own");
++            return None;
++        }
++        let texture = made?;
++        tracing::info!(
++            width,
++            height,
++            format = format.0,
++            "FSR 1: a texture of its own made"
++        );
++        // The one before stays alive in the lists that still hold it.
++        self.made = Some((texture.clone(), width, height, format.0));
++        Some(texture)
++    }
++}
++
++/// What the presenter keeps for the pass.
++#[derive(Default)]
++pub(super) struct Fsr {
++    /// EASU's output, RCAS's input: the shown size.
++    mid: Target,
++    /// For a present of planes: the world enlarged, composed under the rest.
++    pub(super) world: Target,
++    said: bool,
++}
++
++/// A shader resource view of `texture` in the plane pass's ring; its
++/// shader-visible handle.
++///
++/// # Safety
++/// A live texture; the ring's slot is not read by a frame still in flight
++/// (the ring is as large as the plane pass's).
++unsafe fn view(
++    host: &Host,
++    pass: &PlanePass,
++    texture: &ID3D12Resource,
++) -> D3D12_GPU_DESCRIPTOR_HANDLE {
++    // SAFETY: the caller's promise.
++    unsafe {
++        let of = texture.GetDesc();
++        let slot = pass.next.fetch_add(1, Ordering::Relaxed) % PLANE_VIEWS;
++        let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
++            Format: swap_format(of.Format)
++                .filter(|_| typeless(of.Format))
++                .unwrap_or(of.Format),
++            ViewDimension: D3D12_SRV_DIMENSION_TEXTURE2D,
++            Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
++            Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
++                Texture2D: D3D12_TEX2D_SRV {
++                    MipLevels: 1,
++                    ..Default::default()
++                },
++            },
++        };
++        let cpu = D3D12_CPU_DESCRIPTOR_HANDLE {
++            ptr: pass.cpu + (slot * pass.step) as usize,
++        };
++        host.device
++            .CreateShaderResourceView(texture, Some(&desc), cpu);
++        D3D12_GPU_DESCRIPTOR_HANDLE {
++            ptr: pass.gpu + u64::from(slot * pass.step),
++        }
++    }
++}
++
++/// One full-target triangle of `pipeline` reading `source` into `target`.
++///
++/// # Safety
++/// An open list; live textures, `source` readable by pixel shaders and
++/// `target` a render target.
++#[allow(clippy::too_many_arguments)]
++unsafe fn pass(
++    host: &Host,
++    planes: &PlanePass,
++    list: &ID3D12GraphicsCommandList,
++    root: &ID3D12RootSignature,
++    pipeline: &ID3D12PipelineState,
++    source: &ID3D12Resource,
++    target: &ID3D12Resource,
++    sizes: [f32; 8],
++) {
++    let (width, height) = (sizes[2] as u32, sizes[3] as u32);
++    // SAFETY: the caller's promise.
++    unsafe {
++        let table = view(host, planes, source);
++        let rtv = host.rtv(Some(target), None);
++        list.SetDescriptorHeaps(&[Some(planes.views.clone())]);
++        list.SetGraphicsRootSignature(root);
++        list.SetPipelineState(pipeline);
++        list.OMSetRenderTargets(1, Some(&rtv), false, None);
++        list.RSSetViewports(&[D3D12_VIEWPORT {
++            TopLeftX: 0.0,
++            TopLeftY: 0.0,
++            Width: width as f32,
++            Height: height as f32,
++            MinDepth: 0.0,
++            MaxDepth: 1.0,
++        }]);
++        list.RSSetScissorRects(&[RECT {
++            left: 0,
++            top: 0,
++            right: width as i32,
++            bottom: height as i32,
++        }]);
++        list.IASetPrimitiveTopology(windows::Win32::Graphics::Direct3D::D3D_PRIMITIVE_TOPOLOGY(
++            4,
++        ));
++        list.SetGraphicsRoot32BitConstants(0, 8, sizes.as_ptr().cast(), 0);
++        list.SetGraphicsRootDescriptorTable(1, table);
++        list.DrawInstanced(3, 1, 0, 0);
++    }
++}
++
++impl Fsr {
++    /// Records into `keep`'s list EASU then RCAS: `source` (readable by
++    /// pixel shaders, and so left) enlarged into `target` (a render target
++    /// of `shown` in `format`, and so left). `false` if nothing was
++    /// recorded (the host refused a pipeline or a texture): then the caller
++    /// shows the picture as before.
++    pub(super) fn record(
++        &mut self,
++        keep: &HostList,
++        source: &ID3D12Resource,
++        target: &ID3D12Resource,
++        shown: (u32, u32),
++        format: DXGI_FORMAT,
++    ) -> bool {
++        let (Some(host), Some(planes), Some(((root, easu), rcas))) =
++            (host(), plane_pass(), pipelines(format))
++        else {
++            return false;
++        };
++        let Some(mid) = self.mid.get(shown, format) else {
++            return false;
++        };
++        // SAFETY: a live texture.
++        let of = unsafe { source.GetDesc() };
++        let sizes = [
++            of.Width as f32,
++            of.Height as f32,
++            shown.0 as f32,
++            shown.1 as f32,
++            sharpness(),
++            0.0,
++            0.0,
++            0.0,
++        ];
++        if !self.said {
++            self.said = true;
++            tracing::info!(
++                from_width = of.Width,
++                from_height = of.Height,
++                to_width = shown.0,
++                to_height = shown.1,
++                "FSR 1: the picture is enlarged at the present"
++            );
++        }
++        keep.keep(&mid);
++        let list = &keep.list;
++        let rt = D3D12_RESOURCE_STATE_RENDER_TARGET;
++        let read = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
++        // SAFETY: an open list; live textures in the states named (`mid`
++        // is a render target between uses).
++        unsafe {
++            pass(host, planes, list, &root, &easu, source, &mid, sizes);
++            list.ResourceBarrier(&[transition(&mid, rt, read)]);
++            let mut sharpen = sizes;
++            // RCAS reads the enlarged picture.
++            sharpen[0] = shown.0 as f32;
++            sharpen[1] = shown.1 as f32;
++            pass(host, planes, list, &root, &rcas, &mid, target, sharpen);
++            list.ResourceBarrier(&[transition(&mid, read, rt)]);
++        }
++        true
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::{fit, parse_size};
++
++    #[test]
++    fn the_picture_is_fitted_larger_only() {
++        assert_eq!(fit((1280, 720), (1920, 1080)), (1920, 1080));
++        assert_eq!(fit((960, 540), (1280, 720)), (1280, 720));
++        // Its aspect kept inside a wider screen.
++        assert_eq!(fit((1280, 720), (2560, 1080)), (1920, 1080));
++        // Never smaller, never more than three times.
++        assert_eq!(fit((1920, 1080), (1280, 720)), (1920, 1080));
++        assert_eq!(fit((1920, 1080), (1920, 1080)), (1920, 1080));
++        assert_eq!(fit((640, 360), (3840, 2160)), (1920, 1080));
++        assert_eq!(parse_size("1920x1080"), Some((1920, 1080)));
++        assert_eq!(parse_size("1080p"), None);
++        assert_eq!(parse_size("10x10"), None);
++    }
++}
+diff --git a/crates/victory-gpu/src/lib.rs b/crates/victory-gpu/src/lib.rs
+index 695071c..0c6a284 100644
+--- a/crates/victory-gpu/src/lib.rs
++++ b/crates/victory-gpu/src/lib.rs
+@@ -78,6 +78,8 @@ mod shadow;
+ mod tiles;
+ pub mod signature;
+ mod switch;
++// Defaults for 6 GB cards (`VICTORY_VRAM_TIER`).
++mod vram_tier;
+ #[cfg(all(windows, feature = "diagnostics"))]
+ mod ab;
+ #[cfg(windows)]
+diff --git a/crates/victory-gpu/src/resource.rs b/crates/victory-gpu/src/resource.rs
+index b7dd641..0627b90 100644
+--- a/crates/victory-gpu/src/resource.rs
++++ b/crates/victory-gpu/src/resource.rs
+@@ -1685,6 +1685,10 @@ pub(crate) fn room(memory: Option<[u64; 4]>) -> bool {
+     // (With the tiles of the copies made level by level, whose own bytes
+     // count as none: `crate::tiles`.)
+     let filled = KINDS[1].load(Relaxed) + crate::tiles::given_total();
++    // 6 GB cards: a limit of their own unless one is asked (`crate::vram_tier`).
++    let limit = limit.or_else(|| {
++        crate::vram_tier::small(memory.map(|[budget, ..]| budget)).then_some(crate::vram_tier::TEXTURE_BUDGET)
++    });
+     if let Some(limit) = limit {
+         return filled < limit;
+     }
+@@ -1707,7 +1711,7 @@ pub(crate) fn room(memory: Option<[u64; 4]>) -> bool {
+ 
+ /// The bytes of the card's memory the texture queue leaves free for
+ /// render targets and other host copies the host itself writes that are
+-/// not made yet: `VICTORY_CARD_ROOM_FOR_TARGETS_MB` (3,072; 0: none, as
++/// not made yet: `VICTORY_CARD_ROOM_FOR_TARGETS_MB` (3,072, 2,304 on 6 GB cards; 0: none, as
+ /// before) less what such copies hold now.
+ ///
+ /// Measured (runs 193, 197, 198): 652 MB of them before the world, 2,255
+@@ -1725,13 +1729,28 @@ pub(crate) fn room(memory: Option<[u64; 4]>) -> bool {
+ #[cfg(windows)]
+ pub(crate) fn targets_room_kept() -> u64 {
+     use std::sync::atomic::Ordering::Relaxed;
+-    static MOST: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+-    let most = *MOST.get_or_init(|| {
++    static ASKED: std::sync::OnceLock<Option<u64>> = std::sync::OnceLock::new();
++    let asked = *ASKED.get_or_init(|| {
+         std::env::var("VICTORY_CARD_ROOM_FOR_TARGETS_MB")
+             .ok()
+             .and_then(|v| v.trim().parse::<u64>().ok())
+-            .map_or(3072 << 20, |mb| mb.min(8192) << 20)
++            .map(|mb| mb.min(8192) << 20)
+     });
++    // Without a setting: 3,072 MB, or on a 6 GB card 2,304 MB
++    // (`crate::vram_tier`), decided once the card's budget is known.
++    static MOST: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
++    let most = match asked {
++        Some(most) => most,
++        None => match MOST.get() {
++            Some(most) => *most,
++            None => match crate::vram_tier::host_budget() {
++                Some(budget) => *MOST.get_or_init(|| {
++                    if crate::vram_tier::small(Some(budget)) { crate::vram_tier::ROOM_FOR_TARGETS } else { 3072 << 20 }
++                }),
++                None => 3072 << 20,
++            },
++        },
++    };
+     // Every host texture's bytes less those of the copies the title fills.
+     let targets = HOST_TEXTURES[1].load(Relaxed).saturating_sub(KINDS[1].load(Relaxed));
+     most.saturating_sub(targets)
+diff --git a/crates/victory-gpu/src/shadow.rs b/crates/victory-gpu/src/shadow.rs
+index 1f88ebc..6c34898 100644
+--- a/crates/victory-gpu/src/shadow.rs
++++ b/crates/victory-gpu/src/shadow.rs
+@@ -180,6 +180,11 @@ fn default_card_limits_mb(local_vram_budget: Option<u64>) -> (u64, u64) {
+     let Some(budget_bytes) = local_vram_budget else {
+         return (16, 512);
+     };
++    // 6 GB cards (GTX 1660, RTX 2060/3050 6 GB): half of an 8 GB card's
++    // copies, so the card stays under the system's budget (`crate::vram_tier`).
++    if crate::vram_tier::small(Some(budget_bytes)) {
++        return (1, crate::vram_tier::CARD_BUFFERS_MB);
++    }
+     let budget_mb = budget_bytes >> 20;
+     const TWELVE_GIB_MB: u64 = 12 * 1024;
+     const TWENTY_GIB_MB: u64 = 20 * 1024;
+@@ -5203,7 +5208,13 @@ pub(crate) fn by_address(start: u64, len: u64) -> Option<Arc<Shadow>> {
+     static USED: AtomicU64 = AtomicU64::new(0);
+     let most = *MOST.get_or_init(|| {
+         let mb = std::env::var("VICTORY_MEMORY_CARD_MB").ok().and_then(|v| v.trim().parse::<u64>().ok());
+-        mb.unwrap_or(4096) << 20
++        let budget = host.video_memory().map(|[budget, ..]| budget);
++        crate::vram_tier::say_once(budget);
++        match mb {
++            Some(mb) => mb << 20,
++            None if crate::vram_tier::small(budget) => crate::vram_tier::MEMORY_CARD,
++            None => 4096 << 20,
++        }
+     });
+     let room = host.video_memory().is_none_or(|[budget, used, ..]| used + len < budget / 100 * 97);
+     let (staging, data) = host.shared_buffer(len)?;
+@@ -5443,6 +5454,10 @@ mod window_tests {
+         // buffers from 1 MiB, up to 1 GiB.
+         assert_eq!(default_card_limits_mb(None), (16, 512));
+         assert_eq!(default_card_limits_mb(Some(8 * GIB)), (1, 1024));
++        if std::env::var_os("VICTORY_VRAM_TIER").is_none() {
++            // A 6 GB card's budget (GTX 1660): `crate::vram_tier`.
++            assert_eq!(default_card_limits_mb(Some(5836 << 20)), (1, 512));
++        }
+         assert_eq!(default_card_limits_mb(Some(11 * GIB)), (1, 1024));
+         assert_eq!(default_card_limits_mb(Some(12 * GIB)), (1, 1024));
+ 
+diff --git a/crates/victory-gpu/src/vram_tier.rs b/crates/victory-gpu/src/vram_tier.rs
+new file mode 100644
+index 0000000..e73dfce
+--- /dev/null
++++ b/crates/victory-gpu/src/vram_tier.rs
+@@ -0,0 +1,114 @@
++//! Defaults for cards with 6 GB of their own memory or less (GTX 1660 /
++//! 1660 Super / 1660 Ti, RTX 2060 6 GB, RTX 3050 6 GB, laptop RTX 4050):
++//! `VICTORY_VRAM_TIER`.
++//!
++//! This fork's defaults are measured on an 8 GB card. On a 6 GB one the
++//! system's budget for the process is about 5.6 to 5.9 GB, and the 8 GB
++//! defaults (3 GB kept for render targets, 4 GB of buffer copies on the
++//! card, texture copies up to nine tenths of the budget) push the card past
++//! it: the system then moves memory into the PC's, and a frame takes several
++//! times as long. With a small card each such default becomes the one the
++//! Protonida fork (deynesdev/Protonida, 6 GB RTX 4050) ran stably with, after
++//! its "Kelvaroq 6 GB" budget set. An explicit `VICTORY_*` setting still
++//! wins over every one of them.
++//!
++//! `VICTORY_VRAM_TIER`: `auto` (the default: small when the budget is at most
++//! [`SMALL_MOST`]), `6gb` (small whatever the card says), `off` (this fork's
++//! defaults as before).
++
++/// The largest budget still taken as a 6 GB card's (8 GB cards report
++/// about 7.2 to 7.6 GB).
++pub(crate) const SMALL_MOST: u64 = 6656 << 20;
++
++const MIB: u64 = 1 << 20;
++
++/// What `VICTORY_VRAM_TIER` asks: `Some(true)` small, `Some(false)` not,
++/// `None` decided by the budget.
++fn forced() -> Option<bool> {
++    static FORCED: std::sync::OnceLock<Option<bool>> = std::sync::OnceLock::new();
++    *FORCED.get_or_init(|| parse_tier(std::env::var("VICTORY_VRAM_TIER").ok().as_deref()))
++}
++
++pub(crate) fn parse_tier(text: Option<&str>) -> Option<bool> {
++    match text?.trim().to_ascii_lowercase().as_str() {
++        "6" | "6gb" | "small" | "1" => Some(true),
++        "off" | "0" | "normal" | "8gb" => Some(false),
++        _ => None,
++    }
++}
++
++/// Whether a card with this budget (`None`: not known yet) gets the small
++/// card's defaults.
++pub(crate) fn small(budget: Option<u64>) -> bool {
++    decide(forced(), budget)
++}
++
++pub(crate) fn decide(forced: Option<bool>, budget: Option<u64>) -> bool {
++    forced.unwrap_or_else(|| budget.is_some_and(|b| b <= SMALL_MOST))
++}
++
++/// The most bytes of card copies of title buffers (`VICTORY_CARD_BUFFERS_MB`):
++/// 512 MiB where 8 GB cards take 1 GiB.
++pub(crate) const CARD_BUFFERS_MB: u64 = 512;
++/// Texture copies for shaders that pick textures by index
++/// (`VICTORY_TEXTURE_BUDGET_MB`): at most 512 MiB.
++pub(crate) const TEXTURE_BUDGET: u64 = 512 * MIB;
++/// Kept for render targets (`VICTORY_CARD_ROOM_FOR_TARGETS_MB`): 2,304 MiB
++/// where 8 GB cards keep 3,072.
++pub(crate) const ROOM_FOR_TARGETS: u64 = 2304 * MIB;
++/// Shader-visible memory on the card (`VICTORY_MEMORY_CARD_MB`): 768 MiB
++/// where 8 GB cards take 4 GiB.
++pub(crate) const MEMORY_CARD: u64 = 768 * MIB;
++/// Texture bytes staged a frame (`VICTORY_TEXTURE_STAGE_MB`): 64 MiB.
++pub(crate) const TEXTURE_STAGE: u64 = 64 * MIB;
++
++/// The budget the system gives this process on the card, if the host
++/// device is made.
++#[cfg(windows)]
++pub(crate) fn host_budget() -> Option<u64> {
++    crate::host::host()
++        .and_then(|h| h.video_memory())
++        .map(|[budget, ..]| budget)
++}
++
++/// Says once in the log which defaults are in use.
++pub(crate) fn say_once(budget: Option<u64>) {
++    static SAID: std::sync::Once = std::sync::Once::new();
++    if budget.is_none() && forced().is_none() {
++        return;
++    }
++    SAID.call_once(|| {
++        let small = small(budget);
++        tracing::info!(
++            budget_mb = budget.map(|b| b >> 20),
++            small,
++            "VRAM tier: {} (VICTORY_VRAM_TIER=auto|6gb|off)",
++            if small {
++                "6 GB card defaults"
++            } else {
++                "this fork's 8 GB defaults"
++            }
++        );
++    });
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    const GIB: u64 = 1 << 30;
++
++    #[test]
++    fn the_tier_is_told_or_taken_from_the_budget() {
++        assert_eq!(parse_tier(Some("6GB")), Some(true));
++        assert_eq!(parse_tier(Some(" off ")), Some(false));
++        assert_eq!(parse_tier(Some("auto")), None);
++        assert_eq!(parse_tier(None), None);
++        // A GTX 1660's budget is some 5.7 GB; an 8 GB card's some 7.3 GB.
++        assert!(decide(None, Some(5836 * MIB)));
++        assert!(decide(None, Some(6 * GIB)));
++        assert!(!decide(None, Some(7475 * MIB)));
++        assert!(!decide(None, None), "not known yet: the usual defaults");
++        assert!(decide(Some(true), Some(24 * GIB)));
++        assert!(!decide(Some(false), Some(4 * GIB)));
++    }
++}
+diff --git a/crates/victory-loader/src/hooks.rs b/crates/victory-loader/src/hooks.rs
+index 96fa540..45c8f8f 100644
+--- a/crates/victory-loader/src/hooks.rs
++++ b/crates/victory-loader/src/hooks.rs
+@@ -71,6 +71,13 @@ pub(crate) const RENDER_SCALE_ENV: &str = "VICTORY_RENDER_SCALE";
+ /// on every console profile (Series S otherwise picks FSR).
+ pub(crate) const OWN_UPSCALER_ENV: &str = "VICTORY_OWN_UPSCALER";
+ 
++/// Environment variable that sets the title's output size (`<w>x<h>`, one
++/// of [`OUTPUT_MODES`]). Off by default.
++pub(crate) const OUTPUT_ENV: &str = "VICTORY_OUTPUT";
++
++/// Sizes the title has a display mode for (its own list, +0x615c0c0).
++pub(crate) const OUTPUT_MODES: [(u32, u32); 5] = [(1280, 720), (1664, 936), (1920, 1080), (2560, 1440), (3840, 2160)];
++
+ /// A patch whose bytes are computed at load time.
+ struct OwnedPatch {
+     what: &'static str,
+@@ -150,6 +157,95 @@ fn render_scale_patches(base: usize, scale: f32, fsr: bool) -> Vec<OwnedPatch> {
+     patches
+ }
+ 
++/// The output size: ported from deynesdev/Protonida
++/// (`crates/victory-loader/src/resolution.rs`, GPL-3.0-or-later), whose
++/// notes say what the title does. The title applies the size of its
++/// `settings.xml` (+0x22434a0, from +0x224352b) and matches it against its
++/// own mode list, not the DXGI output's, so `VICTORY_DISPLAY_MODE` alone
++/// does not change it. Here that block writes the size asked for into the
++/// settings (+0x204/+0x208) and then takes the title's own path (the screen
++/// size setter +0x2478130; +0xd8c3a0 when the height changed). The back
++/// buffers' pool check (+0x247af25, an `int3` unless under 2 MB of the pool
++/// is left, sized for 3840x2160) is jumped over for any other size.
++const SET_SCREEN_SIZE: usize = 0x2478130;
++const SCREEN_HEIGHT: usize = 0xa9438d0;
++const HEIGHT_CHANGED: usize = 0xd8c3a0;
++const OUTPUT_AT: usize = 0x224352b;
++const OUTPUT_BYTES: [u8; 61] = [
++    0x8b, 0x0d, 0x9b, 0x03, 0x70, 0x08, // mov ecx, [+0xa9438cc]
++    0x8b, 0x86, 0x04, 0x02, 0x00, 0x00, // mov eax, [rsi+204h]
++    0x39, 0xc1, 0x75, 0x0d, // cmp ecx, eax ; jne
++    0x8b, 0x96, 0x08, 0x02, 0x00, 0x00, // mov edx, [rsi+208h]
++    0xe8, 0xea, 0x4b, 0x23, 0x00, 0xeb, 0x20, // call +0x2478130 ; jmp +0x2243568
++    0x8b, 0xbe, 0x08, 0x02, 0x00, 0x00, // mov edi, [rsi+208h]
++    0x8b, 0x2d, 0x7c, 0x03, 0x70, 0x08, // mov ebp, [+0xa9438d0]
++    0x89, 0xc1, 0x89, 0xfa, // mov ecx, eax ; mov edx, edi
++    0xe8, 0xd3, 0x4b, 0x23, 0x00, // call +0x2478130
++    0x39, 0xfd, 0x74, 0x07, 0xb1, 0x01, // cmp ebp, edi ; je ; mov cl, 1
++    0xe8, 0x38, 0x8e, 0xb4, 0xfe, // call +0xd8c3a0
++];
++const POOL_CHECK_AT: usize = 0x247af25;
++/// `cmp rax, 1FFFFFh ; jbe +1 ; int3`.
++const POOL_CHECK_BYTES: [u8; 9] = [0x48, 0x3d, 0xff, 0xff, 0x1f, 0x00, 0x76, 0x01, 0xcc];
++
++/// `VICTORY_OUTPUT`'s size, if it is one of the title's modes.
++pub(crate) fn parse_output(text: &str) -> Option<(u32, u32)> {
++    let (w, h) = text.trim().split_once(['x', 'X'])?;
++    let size = (w.trim().parse().ok()?, h.trim().parse().ok()?);
++    OUTPUT_MODES.contains(&size).then_some(size)
++}
++
++/// `rel32` from the end of an instruction at image offset `next` to `to`.
++fn rel(to: usize, next: usize) -> [u8; 4] {
++    ((to as i64 - next as i64) as i32).to_le_bytes()
++}
++
++/// What goes at [`OUTPUT_AT`] for `width` x `height` (as long as the bytes
++/// it replaces).
++fn output_code(width: u32, height: u32) -> Vec<u8> {
++    let at = OUTPUT_AT;
++    let mut c = Vec::with_capacity(OUTPUT_BYTES.len());
++    c.push(0xb8); // mov eax, width
++    c.extend(width.to_le_bytes());
++    c.extend([0x89, 0x86, 0x04, 0x02, 0x00, 0x00]); // mov [rsi+204h], eax
++    c.push(0xbf); // mov edi, height
++    c.extend(height.to_le_bytes());
++    c.extend([0x89, 0xbe, 0x08, 0x02, 0x00, 0x00]); // mov [rsi+208h], edi
++    c.extend([0x8b, 0x2d]); // mov ebp, [screen height]
++    c.extend(rel(SCREEN_HEIGHT, at + c.len() + 4));
++    c.extend([0x89, 0xc1, 0x89, 0xfa]); // mov ecx, eax ; mov edx, edi
++    c.push(0xe8); // call the setter
++    c.extend(rel(SET_SCREEN_SIZE, at + c.len() + 4));
++    let end = OUTPUT_BYTES.len();
++    c.extend([0x39, 0xfd, 0x74, (end - (c.len() + 4)) as u8]); // cmp ebp, edi ; je end
++    c.extend([0xb1, 0x01, 0xe8]); // mov cl, 1 ; call
++    c.extend(rel(HEIGHT_CHANGED, at + c.len() + 4));
++    c.extend([0xeb, (end - (c.len() + 2)) as u8]); // jmp end
++    c.resize(end, 0xcc);
++    c
++}
++
++/// The output patches for `width` x `height`.
++fn output_patches(width: u32, height: u32) -> Vec<OwnedPatch> {
++    let mut patches = vec![OwnedPatch {
++        what: "output size: the settings' size replaced",
++        rva: OUTPUT_AT,
++        expect: OUTPUT_BYTES.to_vec(),
++        new: output_code(width, height),
++    }];
++    if (width, height) != (3840, 2160) {
++        let mut new = POOL_CHECK_BYTES.to_vec();
++        new[6] = 0xeb; // jmp +1 over the int3, in place of jbe +1
++        patches.push(OwnedPatch {
++            what: "output size: back buffer pool's left-over check",
++            rva: POOL_CHECK_AT,
++            expect: POOL_CHECK_BYTES.to_vec(),
++            new,
++        });
++    }
++    patches
++}
++
+ /// The scale `VICTORY_RENDER_SCALE` asks for, if valid.
+ fn parse_scale(text: &str) -> Option<f32> {
+     let v: f32 = text.trim().parse().ok()?;
+@@ -164,7 +260,8 @@ fn parse_scale(text: &str) -> Option<f32> {
+ pub(crate) unsafe fn resolution_levers(base: usize, hash: &blake3::Hash) -> usize {
+     let scale = std::env::var(RENDER_SCALE_ENV).ok();
+     let own = std::env::var_os(OWN_UPSCALER_ENV).is_some_and(|v| v != "0");
+-    if scale.is_none() && !own {
++    let output = std::env::var(OUTPUT_ENV).ok();
++    if scale.is_none() && !own && output.is_none() {
+         return 0;
+     }
+     // Every image the loader maps comes here (the title's DLLs too); only
+@@ -174,6 +271,21 @@ pub(crate) unsafe fn resolution_levers(base: usize, hash: &blake3::Hash) -> usiz
+         return 0;
+     }
+     let mut applied = 0;
++    if let Some(text) = output {
++        match parse_output(&text) {
++            Some((w, h)) => {
++                for p in output_patches(w, h) {
++                    let p = Patch { what: p.what, rva: p.rva, expect: &p.expect, new: &p.new };
++                    // SAFETY: forwarded from this function's contract.
++                    applied += usize::from(unsafe { apply(base, &p) });
++                }
++            }
++            None => tracing::warn!(
++                text,
++                "{OUTPUT_ENV} wants one of the title's modes: 1280x720, 1664x936, 1920x1080, 2560x1440, 3840x2160"
++            ),
++        }
++    }
+     if own {
+         // SAFETY: forwarded from this function's contract.
+         applied += usize::from(unsafe { apply(base, &OWN_UPSCALER) });
+@@ -228,6 +340,40 @@ unsafe fn apply(base: usize, p: &Patch<'_>) -> bool {
+ mod tests {
+     use super::*;
+ 
++    #[test]
++    fn output_sizes_are_the_titles_modes() {
++        assert_eq!(parse_output("1280x720"), Some((1280, 720)));
++        assert_eq!(parse_output(" 1920X1080 "), Some((1920, 1080)));
++        assert_eq!(parse_output("960x540"), None);
++        assert_eq!(parse_output("720p"), None);
++    }
++
++    /// The calls and loads of the replaced block are the ones the new code
++    /// keeps, and its jumps land at the block's end.
++    #[test]
++    fn the_output_code_keeps_the_titles_path() {
++        let b = OUTPUT_BYTES;
++        let old = |end: usize| (OUTPUT_AT + end) as i64 + i64::from(i32::from_le_bytes(b[end - 4..end].try_into().unwrap()));
++        assert_eq!(old(27), SET_SCREEN_SIZE as i64);
++        assert_eq!(old(50), SET_SCREEN_SIZE as i64);
++        assert_eq!(old(61), HEIGHT_CHANGED as i64);
++        assert_eq!(old(41), SCREEN_HEIGHT as i64);
++        let c = output_code(1280, 720);
++        assert_eq!(c.len(), b.len());
++        assert_eq!(c[1..5], 1280u32.to_le_bytes());
++        assert_eq!(c[12..16], 720u32.to_le_bytes());
++        let new = |end: usize| (OUTPUT_AT + end) as i64 + i64::from(i32::from_le_bytes(c[end - 4..end].try_into().unwrap()));
++        assert_eq!(new(28), SCREEN_HEIGHT as i64);
++        assert_eq!(new(37), SET_SCREEN_SIZE as i64);
++        assert_eq!(new(48), HEIGHT_CHANGED as i64);
++        assert_eq!(41 + c[40] as usize, 61, "je lands at the end");
++        assert_eq!(50 + c[49] as usize, 61, "jmp lands at the end");
++        let pool = output_patches(1280, 720);
++        assert_eq!(pool.len(), 2);
++        assert_eq!(pool[1].new, [0x48, 0x3d, 0xff, 0xff, 0x1f, 0x00, 0xeb, 0x01, 0xcc]);
++        assert_eq!(output_patches(3840, 2160).len(), 1);
++    }
++
+     #[test]
+     fn scales_outside_the_floor_are_refused() {
+         assert_eq!(parse_scale("0.5"), Some(0.5));
+diff --git a/crates/victory-loader/src/windows.rs b/crates/victory-loader/src/windows.rs
+index d44115f..a08b2c2 100644
+--- a/crates/victory-loader/src/windows.rs
++++ b/crates/victory-loader/src/windows.rs
+@@ -95,9 +95,10 @@ pub fn load(prepared: &PreparedImage, dir: &Path) -> Result<LoadedImage> {
+     if levers > 0 {
+         tracing::warn!(
+             applied = levers,
+-            "title resolution levers ({}, {})",
++            "title resolution levers ({}, {}, {})",
+             crate::hooks::RENDER_SCALE_ENV,
+-            crate::hooks::OWN_UPSCALER_ENV
++            crate::hooks::OWN_UPSCALER_ENV,
++            crate::hooks::OUTPUT_ENV
+         );
+     }
+     tracing::info!(
+diff --git a/docs/GTX1660.ru.md b/docs/GTX1660.ru.md
+new file mode 100644
+index 0000000..d4dd64b
+--- /dev/null
++++ b/docs/GTX1660.ru.md
+@@ -0,0 +1,110 @@
++# GTX 1660 и другие карты на 6 ГБ
++
++Ветка `gtx1660` поверх VI-BR-PORT (`da559920`). Цель — 6-гигабайтные карты NVIDIA
++без ядер трассировки лучей (GTX 1660 / 1660 Super / 1660 Ti) на мониторе 1080p.
++Целевой ПК: GTX 1660 6 ГБ, i5-11400F, 16 ГБ DDR4. Игровые файлы, как и раньше,
++только ваши собственные; в репозитории их нет.
++
++> **Не измерено.** Ничего из описанного ниже ещё не запускалось на GTX 1660. Код
++> собирается под Windows (`cargo check`, `clippy`); логика FSR 1, проверка
++> 6-гигабайтной карты и патч размера вывода проверены тестами, шейдеры собраны в
++> SPIR-V и прошли `spirv-val`. Цифры кадров ниже — оценка, а не замер.
++
++## Что добавлено
++
++### 1. Значения по умолчанию для 6 ГБ видеопамяти (`VICTORY_VRAM_TIER`)
++
++Значения этого форка подобраны на карте на 8 ГБ. На карте на 6 ГБ система
++выделяет процессу примерно 5,6–5,9 ГБ, и прежние значения по умолчанию выводят
++карту за этот предел: тогда система переносит данные в обычную ОЗУ, и кадр
++выходит в разы дольше. Теперь, если бюджет карты не больше 6,5 ГБ, берутся
++значения, с которыми стабильно работал Protonida (RTX 4050 6 ГБ):
++
++| Настройка | 8 ГБ (как было) | 6 ГБ (теперь) |
++|---|---|---|
++| `VICTORY_CARD_BUFFERS_MB` — копии буферов игры на карте | 1024 | 512 |
++| `VICTORY_TEXTURE_BUDGET_MB` — копии текстур для выборки по индексу | до 90 % бюджета | 512 |
++| `VICTORY_CARD_ROOM_FOR_TARGETS_MB` — запас под render target'ы | 3072 | 2304 |
++| `VICTORY_MEMORY_CARD_MB` — видимая шейдерам память на карте | 4096 | 768 |
++| `VICTORY_TEXTURE_STAGE_MB` — загрузка текстур за кадр | 96 | 64 |
++
++`VICTORY_VRAM_TIER=auto` (по умолчанию) решает по бюджету, `6gb` включает всегда,
++`off` возвращает прежнее поведение. Явно заданная любая из настроек выше
++по-прежнему важнее. В логе одна строка `VRAM tier: ...` говорит, что выбрано.
++
++### 2. Размер вывода игры (`VICTORY_OUTPUT`)
++
++Перенесено из Protonida: игра берёт размер из своего `settings.xml` и сверяет его
++со своим списком режимов, поэтому `VICTORY_DISPLAY_MODE` сам по себе размер не
++меняет. `VICTORY_OUTPUT=<ш>x<в>` — один из режимов игры: `1280x720`, `1664x936`,
++`1920x1080`, `2560x1440`, `3840x2160`. Патч срабатывает только на исполняемом
++файле 1.0.2.1 и только если байты совпадают с ожидаемыми; иначе в логе
++предупреждение, и ничего не меняется.
++
++### 3. FSR 1 при выводе кадра (`VICTORY_FSR`)
++
++AMD FidelityFX Super Resolution 1 (EASU + RCAS, по `ffx_fsr1.h`, MIT) в момент
++вывода кадра: картинка игры увеличивается до размера экрана вместо простого
++копирования или растягивания. На Series S кадр приходит двумя плоскостями, и
++через FSR идёт только мир (нижняя плоскость). Интерфейс накладывается поверх
++уже увеличенного мира в размере окна, так что текст и HUD остаются чёткими.
++Код игры не трогается.
++
++- `VICTORY_FSR=1` — включить (без него выключено).
++- `VICTORY_FSR_OUTPUT=<ш>x<в>` — до какого размера увеличивать (по умолчанию
++  размер основного экрана). Пропорции сохраняются; если экран не больше картинки
++  игры, ничего не делается.
++- `VICTORY_FSR_SHARPNESS=<ступени>` — резкость RCAS, 0 самая резкая … 2 (по
++  умолчанию 0.25).
++
++Если драйвер откажется собрать пайплайны FSR, кадр растягивается обычным
++сглаженным проходом, игра не останавливается.
++
++### 4. Пресеты
++
++`Play-GTX1660.cmd "<путь к game_scarlett_master.exe>" [пресет]` или
++`scripts\play-gtx1660.ps1 -Exe <путь> -Preset <пресет>`:
++
++| Пресет | Внутренний рендер | Вывод игры | На экран | Для чего |
++|---|---|---|---|---|
++| `perf540` (по умолчанию) | ~960x540 | 1280x720 (свой апскейлер игры) | FSR 1 → 1920x1080 | основной, ради 30 кадров |
++| `test720` | 1280x720 | 1280x720 | FSR 1 → 1920x1080 | проверка FSR на чистом 720p |
++| `half` | ~960x540 | 1920x1080 (свой апскейлер игры) | как есть | Series S в половинном разрешении, без FSR |
++| `native` | 1280x720 | 1920x1080 | как есть | настройки форка, для сравнения |
++
++Во всех пресетах: профиль Series S, трассировка лучей выключена (`VICTORY_RT_MISS=1`,
++`VICTORY_SKIP_RT_SHADOW=1`, `VICTORY_BVH_BUILDER` не задан), `VICTORY_THIN=0`
++(на NVIDIA `THIN=1` вдвое снижает частоту кадров), `VICTORY_VRAM_TIER=6gb`,
++`VICTORY_UPSCALER=6`, `VICTORY_DISPLAY_MODE=1920x1080`.
++
++Параметры: `-Screen 2560x1440` — другой экран для FSR, `-Sharpness 0.5`,
++`-Build diag` — сборка с диагностикой, `-More @{VICTORY_PANEL='1'}` — что угодно ещё.
++
++## Сборка (Windows)
++
++```powershell
++copy victory.example.toml victory.toml      # и укажите в game_dir путь к своей копии
++cargo build --locked --release -p victory
++target\release\victory.exe shaders <шейдеры игры>
++Play-GTX1660.cmd "D:\...\game_scarlett_master.exe" perf540
++```
++
++Первый запуск долгий: шейдеры транслируются и компилируются драйвером, первые
++минуты будут подтормаживания, пока кэш не наполнится.
++
++## Чего ждать
++
++Оценка, а не замер. RTX 4060 Ti из README этого форка примерно в 2–2,5 раза
++быстрее GTX 1660 и даёт 20–24 кадра в 1080p в тюрьме. Для GTX 1660:
++
++- `native`: примерно 9–11 кадров;
++- `perf540`: примерно 15–22 кадра; в простых сценах ближе к потолку игры в 30;
++- `half`: близко к `perf540`, но апскейл делает сама игра (TAAU), без FSR.
++
++Что проверить первым делом и прислать (лог `victory.log` и строки кадров из него):
++
++1. строку `VRAM tier: 6 GB card defaults` и строки `FSR 1: ...` в логе;
++2. частоту кадров и загрузку видеопамяти в `perf540` и `native` в одной и той же
++   сцене (тюремная камера после загрузки сохранения);
++3. нет ли строк `hook skipped` для `output size` — это значит, что патч размера
++   вывода не подошёл к вашей сборке.
+diff --git a/scripts/play-gtx1660.ps1 b/scripts/play-gtx1660.ps1
+new file mode 100644
+index 0000000..d787593
+--- /dev/null
++++ b/scripts/play-gtx1660.ps1
+@@ -0,0 +1,64 @@
++# Starts the title with settings for a 6 GB NVIDIA card without ray-tracing cores
++# (GTX 1660 / 1660 Super / 1660 Ti; also RTX 2060 6 GB, RTX 3050 6 GB) on a 1080p screen.
++# docs/GTX1660.md says what each preset does and what was measured.
++#   scripts\play-gtx1660.ps1 -Exe <path of your own copy's executable> [-Preset perf540]
++# -Preset    perf540   the title at 1280x720 from ~960x540 (its own upscaler), FSR 1 to the screen (default)
++#            test720   the title at 1280x720 from 1280x720 (no upscaler of its own), FSR 1 to the screen
++#            half      Series S at half scale: the title at 1920x1080 from 960x540, no FSR
++#            native    this fork's own settings at 1920x1080 (2/3 scale), for comparison
++# -Screen    the size FSR 1 enlarges to (default: the primary screen's)
++# -Sharpness RCAS, 0 the sharpest to 2 (default 0.25)
++# -Build     target\diag (as play.ps1) or target\release
++# -More      other settings: -More @{VICTORY_PANEL='1'}
++# Run it from a normal window, not as administrator: the driver then keeps its shader cache elsewhere.
++param(
++    [Parameter(Mandatory)][string]$Exe,
++    [ValidateSet('perf540', 'test720', 'half', 'native')][string]$Preset = 'perf540',
++    [string]$Screen = '',
++    [double]$Sharpness = 0.25,
++    [ValidateSet('diag', 'release')][string]$Build = 'release',
++    [hashtable]$More = @{}
++)
++# This fork's measured settings (README.md, "How to run"), without the ones an NVIDIA card
++# runs slower with (VICTORY_THIN=1 halves the frame rate there).
++$settings = @{
++    VICTORY_TEXTURE_NO_WAIT = '1'; VICTORY_RELAY = '2'; VICTORY_WIDE_BACK = '1'; VICTORY_CARD_REHASH_RUNS = '1'
++    VICTORY_JOIN_COPIES = '1'; VICTORY_INDIRECT_WINDOW = '1'; VICTORY_RELAY_COPY = '1'; VICTORY_CARD_STEPS = '2'
++    VICTORY_INDIRECT_BATCH = '2'; VICTORY_MAP_THREADS = '1'; VICTORY_TITLE_PRIORITIES = '0'; VICTORY_CARD_AWAKE = '0'
++    VICTORY_SHOW_AFTER = '1'; VICTORY_AMBIENT = 'constant:0.1'; VICTORY_AMBIENT_AIR = '0.8'; VICTORY_CARD_BUFFERS_MIN_KB = '64'
++    VICTORY_PORT_CONSTANTS = '1'; VICTORY_D3D12_DRED = 'light'; VICTORY_SKIP_PIPELINES = 'none'
++    VICTORY_THIN = '0'; VICTORY_PIPELINE_BOOK = '1'; VICTORY_ASYNC_SUBMIT = '1'
++    # No ray tracing: a GTX 16 card has no cores for it. The ray test hits nothing, the skinning
++    # for the ray-tracing structure and the ray-traced shadow passes are left out.
++    VICTORY_RT_MISS = '1'; VICTORY_SKIP_RT_SHADOW = '1'
++    # The title's own upscaler (the FidelityFX passes have no DXIL here).
++    VICTORY_UPSCALER = '6'
++    # The console's display: a 1080p television (the interface plane is made at that size).
++    VICTORY_DISPLAY_MODE = '1920x1080'
++    # 6 GB card defaults (crates/victory-gpu/src/vram_tier.rs), even if the system reports a
++    # budget a little over 6.5 GB.
++    VICTORY_VRAM_TIER = '6gb'
++}
++switch ($Preset) {
++    'perf540' { $settings.VICTORY_OUTPUT = '1280x720'; $settings.VICTORY_RENDER_SCALE = '0.75'; $settings.VICTORY_FSR = '1' }
++    'test720' { $settings.VICTORY_OUTPUT = '1280x720'; $settings.VICTORY_RENDER_SCALE = '1.0'; $settings.VICTORY_FSR = '1' }
++    'half'    { $settings.VICTORY_OUTPUT = '1920x1080'; $settings.VICTORY_RENDER_SCALE = '0.5' }
++    'native'  { }
++}
++if ($settings.VICTORY_FSR) {
++    $settings.VICTORY_FSR_SHARPNESS = [string]::Format([cultureinfo]::InvariantCulture, '{0}', $Sharpness)
++    if ($Screen) { $settings.VICTORY_FSR_OUTPUT = $Screen }
++}
++foreach ($k in $More.Keys) { $settings[$k] = $More[$k] }
++
++$victory = Join-Path $PSScriptRoot "..\target\$Build\victory.exe"
++if (-not (Test-Path $victory)) { Write-Host "No $victory. Build it first (docs/GTX1660.md)."; return }
++if (-not (Test-Path $Exe)) { Write-Host "No $Exe."; return }
++# (Other settings left over in this window go; where your files are stays.)
++$paths = 'VICTORY_CONFIG', 'VICTORY_GAME_DIR', 'VICTORY_CACHE_DIR', 'VICTORY_DATA_DIR'
++Get-ChildItem Env:VICTORY_* | Where-Object { $_.Name -notin $paths } | ForEach-Object { Remove-Item "Env:$($_.Name)" }
++foreach ($k in $settings.Keys) { Set-Item "Env:$k" $settings[$k] }
++Write-Host "Preset ${Preset}:" (($settings.Keys | Where-Object { $_ -match 'OUTPUT|SCALE|FSR|TIER' } | Sort-Object | ForEach-Object { "$_=$($settings[$_])" }) -join ' ')
++$Exe = (Resolve-Path $Exe).Path
++Push-Location (Join-Path $PSScriptRoot '..')   # victory.toml is looked for here
++try { & $victory run $Exe --console series-s --execute } finally { Pop-Location }
+-- 
+2.43.0
+
