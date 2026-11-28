@@ -1,0 +1,7 @@
+# Halcyon: give the logged-in user access to Apple devices in DFU/Recovery and to the RP2350 adapter.
+# Apple DFU (0x1227) and Recovery (0x1281)
+SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="1227", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTR{idVendor}=="05ac", ATTR{idProduct}=="1281", TAG+="uaccess"
+# Raspberry Pi RP2350 (Pico SDK stdio_usb CDC and BOOTSEL)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="2e8a", ATTRS{idProduct}=="0009", TAG+="uaccess", SYMLINK+="halcyon-diag"
+SUBSYSTEM=="usb", ATTR{idVendor}=="2e8a", ATTR{idProduct}=="000f", TAG+="uaccess"

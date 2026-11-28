@@ -1,0 +1,31 @@
+# ILLUSTRATIVE / SYNTHETIC verbose boot log — NOT a real capture.
+# Hand-written to show what an early EVT3 "first boot" of a patched iOS 16
+# kernelcache on iPhone 7 Plus (D11, SEP-less, tethered via checkm8) would look
+# like over the pongoOS USB console, and to exercise `halcyon boot-monitor`.
+# A real first boot very commonly dies exactly here: at the root device.
+[  0.000] checkm8: exploit sent, DFU device in pwned state (CPID:8010 ECID:xxxx)
+[  0.142] pongoOS 2.x (halcyon) booting...
+[  0.210] pongo> loading patched kernelcache (fileset, arm64, SEP-less)
+[  0.355] pongo> applying 23 kernel patches, trustcache loaded (CDHashes=41)
+[  0.361] pongo> jumping to kernel
+[  0.000] ======================================== ::
+[  0.000] iBoot for d11, Copyright 2007-2022, Apple Inc.
+[  0.004] boot-args: rd=md0 -v debug=0x8 serial=3 sepfw-load-at-boot=0
+[  0.051] Darwin Kernel Version 22.6.0: Mon Oct xx; root:xnu-8796.x~1/RELEASE_ARM64_T8010
+[  0.052] vm_page_bootstrap: 721000 free pages and 24500 wired pages
+[  0.088] AppleARMPMU::start (Site 1) ok
+[  0.097] AppleDialogSPMIPMU: PMU D11 OK
+[  0.131] AppleCLCD / IOMobileFramebuffer: display pipe up, 1080x1920
+[  0.166] AppleMultitouchSPI: matched (relinked from 15.8), fw handshake ok
+[  0.201] AppleSEPManager: sepfw-load-at-boot=0 -> running SEP-less (no keystore)
+[  0.202] AppleKeyStore: no SEP keystore; Data Protection unavailable
+[  0.233] AppleBCMWLANCore: firmware staged, radio not started yet
+[  0.401] apfs_module_start: APFS version 2142.x
+[  0.455] apfs: container /dev/disk0s1 - 1 volumes, Data volume is UNENCRYPTED
+[  2.100] Still waiting for root device
+[  7.100] Still waiting for root device
+[ 12.100] Still waiting for root device
+[ 15.004] panic(cpu 0 caller 0xfffffff007b1a2c0): "Waiting on <dict ID="0"><key>IOProviderClass</key><string ID="1">IOMedia</string> ... root device could not be mounted"
+[ 15.006] Debugger message: panic
+[ 15.006] OS version: 20H392
+[ 15.007] Kernel version: Darwin Kernel Version 22.6.0: RELEASE_ARM64_T8010
