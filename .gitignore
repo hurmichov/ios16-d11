@@ -1,4 +1,6 @@
-# Apple firmware must never be committed
+# Apple firmware must never be committed.
+# NOTE: these patterns match extracted firmware blobs, not our Python sources
+# (halcyon/modules/kernelcache.py etc.) — those are force-added and negated below.
 *.ipsw
 *.im4p
 *.img4
@@ -7,12 +9,15 @@
 *.shsh2
 *.dmg
 *.aea
-kernelcache*
-DeviceTree*
-sep-firmware*
+/kernelcache*
+/DeviceTree*
+/sep-firmware*
 ipsw/
 work/
 extract/
+# never ignore our own source tree
+!halcyon/
+!halcyon/**
 
 # build
 dist/
