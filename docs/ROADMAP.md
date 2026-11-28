@@ -10,7 +10,10 @@
 - [x] Halcyon: 10 модулей, CLI, логи, dry-run, проверка модели
 - [x] `halcyon doctor`: платформенная проверка зависимостей (brew на macOS, dnf на Linux)
 - [x] настроен macOS-хост (Xcode CLT + Homebrew + venv с pyimg4) — все обязательные `[ok]`
-- [ ] проверен реальный iPhone 7 Plus (`halcyon device` в normal/recovery/DFU)
+- [x] проверен реальный iPhone 7 Plus — определился `iPhone9,4` / `d111ap`, A10, распознан как target
+
+**EVT0 закрыт.** Целевой аппарат — `iPhone9,4` (GSM, `d111ap`, модем Intel). Все команды EVT1
+с board идут с `--target-board d111ap`.
 - [x] RPM spec и правила udev
 - [x] прошивка RP2350: мост UART → USB-CDC с метками времени, измерение уровня сигнала через ADC
 - [x] тесты на синтетических IPSW
