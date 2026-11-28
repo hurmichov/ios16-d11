@@ -9,7 +9,8 @@
 - [x] структура репозитория, лицензия, `.gitignore`, который не пропускает файлы Apple
 - [x] Halcyon: 10 модулей, CLI, логи, dry-run, проверка модели
 - [x] `halcyon doctor`: платформенная проверка зависимостей (brew на macOS, dnf на Linux)
-- [ ] настроен macOS-хост (Xcode CLT + Homebrew) — см. [MACOS_SETUP.md](MACOS_SETUP.md)
+- [x] настроен macOS-хост (Xcode CLT + Homebrew + venv с pyimg4) — все обязательные `[ok]`
+- [ ] проверен реальный iPhone 7 Plus (`halcyon device` в normal/recovery/DFU)
 - [x] RPM spec и правила udev
 - [x] прошивка RP2350: мост UART → USB-CDC с метками времени, измерение уровня сигнала через ADC
 - [x] тесты на синтетических IPSW

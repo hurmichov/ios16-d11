@@ -42,8 +42,8 @@ DEPS: tuple[Dep, ...] = (
         why="device transport (built into macOS)"),
     Dep("zstd", "bin", "zstd", "zstd", "zstd", why="image (de)compression"),
     Dep("lzfse", "bin", "lzfse", "lzfse", "lzfse", why="kernelcache decompression (kernel kexts/diff)"),
-    Dep("img4tool", "bin", "img4tool", None, "img4tool", required=False,
-        why="IMG4 (un)wrap/sign — tihmstar tap on macOS"),
+    Dep("pyimg4", "python", "pyimg4", None, None, required=False,
+        why="IMG4 (un)wrap/sign via pip (in a venv)"),
     Dep("idevicerestore", "bin", "idevicerestore", "idevicerestore", "idevicerestore", required=False,
         why="stock iOS 15 restore (Recovery Manager)"),
     Dep("idevicebackup2", "bin", "idevicebackup2", "libimobiledevice-utils", "libimobiledevice",
@@ -91,10 +91,11 @@ def install_hints(results: list[tuple[Dep, bool]], include_optional: bool = Fals
             hints.append("xcode-select --install   # для clang/ld и базовых инструментов")
         if any(d.name == "sshpass" for d in missing):
             hints.append("brew install hudochenkov/sshpass/sshpass")
-        if any(d.name == "img4tool" for d in missing):
-            hints.append("brew install tihmstar/tihmstar/img4tool")
     else:
         pkgs = sorted({d.dnf for d in missing if d.dnf})
         if pkgs:
             hints.append("sudo dnf install -y " + " ".join(pkgs))
+    pypkgs = sorted({d.probe for d in missing if d.kind == "python"})
+    if pypkgs:
+        hints.append("pip install " + " ".join(pypkgs) + "   (в активированном venv)")
     return hints

@@ -22,16 +22,25 @@ python3 -m halcyon doctor --all  # + опциональные
 Готовый набор:
 
 ```bash
-brew install cmake pkgconf libusb libplist libimobiledevice libirecovery \
-             zstd lzfse idevicerestore
-# опционально:
-brew install tihmstar/tihmstar/img4tool      # (раз)упаковка/подпись IMG4
+brew install cmake pkgconf libusb libplist libimobiledevice libirecovery zstd lzfse
+# опционально (позже, для EVT3):
+brew install idevicerestore                  # откат на сток iOS 15
 brew install hudochenkov/sshpass/sshpass     # скриптовый SSH в ramdisk
 brew install arm-none-eabi-gcc               # прошивка RP2350
 ```
 
 `usbmuxd` в macOS встроен — отдельно ставить не нужно. APFS в macOS нативный, поэтому блокер
 «сборка APFS под Linux» здесь отсутствует (используем `asr`/`hdiutil`).
+
+IMG4 (раз)упаковка/подпись — через **pyimg4** (как у yigitzra1n), в venv проекта:
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install pyimg4
+```
+
+Homebrew-питон внешне управляется (PEP 668), поэтому ставить pip-пакеты только в venv.
+Halcyon запускай из активированного venv (`python -m halcyon ...`).
 
 ## 3. Проверка
 
